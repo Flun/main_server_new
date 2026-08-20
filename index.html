@@ -75,7 +75,7 @@
                 </div>
             </div>
             <div class="flex flex-wrap gap-3 w-full sm:w-auto">
-                <a href="/models" class="px-3 py-2 text-sm font-medium border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 rounded-lg transition shadow-sm">Model Hub</a>
+                <a href="/model-hub" class="px-3 py-2 text-sm font-medium border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 rounded-lg transition shadow-sm">Model Hub</a>
                 <a href="/media" class="px-3 py-2 text-sm font-medium border border-pink-500/30 bg-pink-500/10 hover:bg-pink-500/20 text-pink-300 rounded-lg transition shadow-sm">Media Studio</a>
                 <a href="/dataset" class="px-3 py-2 text-sm font-medium border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition shadow-sm">Dataset</a>
                 <a href="/vast" class="px-3 py-2 text-sm font-medium border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 rounded-lg transition shadow-sm">Vast Remote</a>
@@ -206,13 +206,13 @@
             </div>
             <div v-if="gpuTuning.available" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 <span class="font-mono">gpu-tune.service</span>에 저장되어 다음 부팅에도 유지됩니다.</p></div>
+                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 <span class="font-mono">gpu-tune.service</span>에 저장되어 다음 부팅에도 유지됩니다.</p><p class="mt-1 text-[11px] text-amber-500/80">현재 방식은 전압점 고정이 아니라 Power Limit + 최대 클럭 제한입니다. RTX 3090 Linux 드라이버에서는 850mV 같은 목표 전압을 직접 지정하지 않습니다.</p></div>
                     <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">systemd 적용</span>
                 </div>
                 <div v-for="gpu in gpuTuning.gpus" :key="gpu.index" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
                     <div><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.name }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · {{ gpu.clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
                     <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" class="input-base mt-1 w-full text-right"></label>
-                    <label class="text-[10px] text-zinc-500">Clock max (MHz)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" class="input-base mt-1 w-full text-right"></label>
+                    <label class="text-[10px] text-zinc-500">Clock cap (MHz)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" class="input-base mt-1 w-full text-right"></label>
                     <label class="text-[10px] text-zinc-500">Fan (0–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" class="input-base mt-1 w-full text-right"></label>
                     <div class="flex gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">기본값</button></div>
                 </div>

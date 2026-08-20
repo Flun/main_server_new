@@ -30,6 +30,12 @@
   연결하고 280W/1800MHz/65% 현재값을 유지한 채 대시보드에서 동적·영구 변경 지원
 - `main_server.service`(systemd user + linger)를 유일한 자동 실행 경로로 유지하고,
   바탕화면에는 서비스가 꺼진 경우 복구 후 콘솔을 여는 바로가기 하나만 유지
+- Manager 재시작 API는 별도 app.py를 spawn하지 않고 systemd의 `Restart=always`만
+  사용해 8999 orphan/중복 프로세스를 방지. `/models`는 새 `/model-hub` 경로로
+  리다이렉트해 브라우저의 복구 전 문서 캐시와 구분
+- GPU 튜닝은 `850mV @ 1800MHz` 같은 전압-주파수 곡선 고정이 아니라
+  `280W power limit + 1800MHz clock cap` 방식임을 UI에 명시. 현재 RTX 3090
+  Linux 드라이버는 목표 mV 직접 지정/조회 기능을 제공하지 않음
 
 ## 보존 및 검증 기준
 

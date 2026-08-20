@@ -4,7 +4,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import threading
 import time
 from pathlib import Path
@@ -12,7 +11,7 @@ from pathlib import Path
 import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 import requests
 
@@ -491,8 +490,15 @@ def index():
     return FileResponse(os.path.join(BASE_DIR, "index.html"))
 
 
-@app.get("/models", response_class=HTMLResponse)
+@app.get("/models")
 def models_page():
+    # A distinct canonical URL prevents browsers from restoring the pre-recovery
+    # Model Hub document from back/forward cache under the old /models URL.
+    return RedirectResponse("/model-hub", status_code=307, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/model-hub", response_class=HTMLResponse)
+def model_hub_page():
     return FileResponse(
         os.path.join(BASE_DIR, "models.html"),
         headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
@@ -1186,7 +1192,10 @@ def _gpu_tuning_snapshot():
                 "fan_percent": configured.get("FAN_PERCENT"),
             }
         gpus.append(gpu)
-    return {"available": bool(gpus), "gpus": gpus, "service": "gpu-tune.service"}
+    return {
+        "available": bool(gpus), "gpus": gpus, "service": "gpu-tune.service",
+        "tuning_mode": "power_and_clock_cap", "voltage_target_supported": False,
+    }
 
 
 @app.get("/api/gpu/tuning")
@@ -1314,15 +1323,9 @@ def restart():
 
 def _restart_now():
     time.sleep(0.5)
-    try:
-        subprocess.Popen(
-            [sys.executable] + sys.argv,
-            start_new_session=True,
-            stdout=open(os.path.join(BASE_DIR, "logs", "manager.log"), "a"),
-            stderr=subprocess.STDOUT,
-        )
-    finally:
-        os._exit(0)
+    # systemd의 Restart=always가 새 manager를 하나만 기동합니다. 여기서 직접
+    # app.py를 spawn하면 systemd 재기동과 경합해 8999를 점유하는 orphan이 생깁니다.
+    os._exit(0)
 
 
 # ---------- 시작 ----------
