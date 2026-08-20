@@ -1,0 +1,18 @@
+[Unit]
+Description=AI Server Manager (main_server, port 8999)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/srv/main_server_new
+ExecStart=/srv/main_server_new/.venv/bin/python /srv/main_server_new/app.py
+Restart=always
+RestartSec=5
+# ComfyUI/llama are independently managed workloads. Restarting only the
+# dashboard must not terminate them with the manager's systemd cgroup.
+KillMode=process
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Main Server 열기
+Name[en]=Open Main Server
+Comment=꺼져 있으면 서비스를 시작하고 관리 콘솔 열기
+Comment[en]=Start the service if needed and open the console
+Exec=/srv/main_server_new/open_manager.sh
+Terminal=false
+Categories=Utility;System;
+Icon=utilities-terminal

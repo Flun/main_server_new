@@ -20,8 +20,16 @@
 - Media Studio의 URL 다운로드, 품질/오디오 옵션, 진행 상태, 경로 복사 기능
 - Dataset, Vast.ai 및 Chrome Instagram 쿠키 브리지 페이지
 - Model Hub 재구현: Hugging Face/Civitai/직접 URL 검사, 파일별 선택,
-  모델 폴더 제한, 이어받기, 작업 진행률, 설치된 모델 검색
+  이어받기, 작업 진행률, 설치된 모델 검색. 별도 파일 관리 탭에서 Ubuntu 전체
+  디렉터리를 OS 사용자 권한 범위 내 탐색하고 생성/업로드/다운로드/이름 변경/이동/
+  휴지통 작업 가능 (시스템 핵심 경로 및 main_server 루트 삭제 차단)
 - Windows 전용 기본 경로를 현재 Ubuntu 설치 경로로 교체
+- GPU 맵에 NVML 총량과 compute process 합의 차이를 `OS / 디스플레이 / 드라이버`
+  VRAM으로 분리 표시
+- 기존 `gpu-tune.service`를 검증형 root helper와 `/etc/main-server/gpu-tune.conf`로
+  연결하고 280W/1800MHz/65% 현재값을 유지한 채 대시보드에서 동적·영구 변경 지원
+- `main_server.service`(systemd user + linger)를 유일한 자동 실행 경로로 유지하고,
+  바탕화면에는 서비스가 꺼진 경우 복구 후 콘솔을 여는 바로가기 하나만 유지
 
 ## 보존 및 검증 기준
 

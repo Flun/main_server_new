@@ -32,10 +32,9 @@
         <span class="h-2 w-2 rounded-full bg-indigo-400"></span> AI Infrastructure Console
       </div>
       <h1 class="text-2xl font-semibold tracking-tight text-zinc-50">Model Hub</h1>
-      <p class="mt-1 text-sm text-zinc-500">링크 확인 → 파일 선택 → 모델 폴더 설치</p>
+      <p class="mt-1 text-sm text-zinc-500">모델 다운로드와 Ubuntu 파일 시스템 관리</p>
     </div>
     <div class="flex items-center gap-2">
-      <button class="button muted" @click="activeView='installed'; loadInstalled()">설치된 모델</button>
       <a href="/" class="button muted no-underline">← 대시보드</a>
     </div>
   </header>
@@ -43,6 +42,7 @@
   <div class="mb-5 flex w-fit rounded-xl border border-zinc-800 bg-zinc-900 p-1">
     <button class="rounded-lg px-4 py-2 text-sm" :class="activeView==='download' ? 'bg-indigo-600 text-white' : 'text-zinc-500'" @click="activeView='download'">다운로드</button>
     <button class="rounded-lg px-4 py-2 text-sm" :class="activeView==='installed' ? 'bg-indigo-600 text-white' : 'text-zinc-500'" @click="activeView='installed'; loadInstalled()">설치됨</button>
+    <button class="rounded-lg px-4 py-2 text-sm" :class="activeView==='files' ? 'bg-indigo-600 text-white' : 'text-zinc-500'" @click="activeView='files'; loadFs()">파일 관리</button>
   </div>
 
   <main v-if="activeView==='download'" class="space-y-5">
@@ -120,7 +120,7 @@
     </section>
   </main>
 
-  <main v-else class="panel overflow-hidden">
+  <main v-else-if="activeView==='installed'" class="panel overflow-hidden">
     <div class="flex flex-col gap-3 border-b border-zinc-800 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
       <div><h2 class="font-semibold">설치된 모델</h2><p class="text-xs text-zinc-500">모델 루트에서 최근 수정된 파일부터 표시합니다.</p></div>
       <div class="flex flex-col gap-2 sm:flex-row"><select v-model="installedRoot" class="input min-w-72 text-sm" @change="loadInstalled"><option v-for="item in rootDestinations" :key="item.path" :value="item.path">{{ item.label }}</option></select><input v-model="installedQuery" class="input text-sm" placeholder="파일명 검색" @keyup.enter="loadInstalled"><button class="button muted" @click="loadInstalled">검색</button></div>
@@ -135,6 +135,32 @@
       </div>
     </div>
   </main>
+
+  <main v-else class="grid gap-5 xl:grid-cols-[240px_minmax(0,1fr)]">
+    <aside class="panel h-fit overflow-hidden">
+      <div class="border-b border-zinc-800 px-4 py-4"><h2 class="text-sm font-semibold">위치</h2><p class="mt-1 text-[11px] text-zinc-500">OS 권한이 허용하는 모든 경로</p></div>
+      <div class="space-y-1 p-2"><button v-for="root in fsRoots" :key="root.path" @click="openFs(root.path)" class="w-full rounded-lg px-3 py-2 text-left text-xs text-zinc-400 hover:bg-zinc-800 hover:text-zinc-100"><span class="block font-medium">{{ root.label }}</span><span class="mt-0.5 block truncate mono text-[10px] text-zinc-600">{{ root.path }}</span></button></div>
+    </aside>
+    <section class="panel min-w-0 overflow-hidden">
+      <div class="space-y-3 border-b border-zinc-800 px-4 py-4">
+        <div class="flex flex-wrap items-center justify-between gap-3"><div><h2 class="font-semibold">파일 시스템</h2><p class="text-xs text-zinc-500">열기, 폴더 생성, 이름 변경, 이동, 업로드, 다운로드, 휴지통 이동</p></div><label class="flex items-center gap-2 text-xs text-zinc-500"><input type="checkbox" v-model="fsShowHidden" @change="loadFs" class="accent-indigo-500"> 숨김 파일</label></div>
+        <form class="flex gap-2" @submit.prevent="openFs(fsPathInput)"><button v-if="fsParent" type="button" @click="openFs(fsParent)" class="button muted !px-3">↑</button><input v-model="fsPathInput" class="input mono text-xs" spellcheck="false"><button class="button primary shrink-0">이동</button></form>
+        <div class="flex flex-wrap gap-2"><button @click="createFsFolder" class="button muted !px-3 !py-2">새 폴더</button><button @click="$refs.fsUpload.click()" class="button muted !px-3 !py-2">파일 업로드</button><input ref="fsUpload" type="file" class="hidden" @change="uploadFsFile"><button @click="refreshFs" class="button muted !px-3 !py-2">새로고침</button><span v-if="!fsWritable" class="self-center text-[11px] text-amber-500">이 폴더는 읽기 전용입니다.</span></div>
+        <div v-if="fsError" class="rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{{ fsError }}</div>
+      </div>
+      <div v-if="fsLoading" class="py-16 text-center text-sm text-zinc-500">폴더를 읽는 중…</div>
+      <div v-else-if="!fsEntries.length" class="py-16 text-center text-sm text-zinc-600">이 폴더는 비어 있습니다.</div>
+      <div v-else class="max-h-[68vh] divide-y divide-zinc-800 overflow-auto">
+        <div v-for="entry in fsEntries" :key="entry.path" class="grid gap-2 px-4 py-3 hover:bg-zinc-800/25 sm:grid-cols-[32px_minmax(0,1fr)_100px_150px_auto] sm:items-center">
+          <button @click="entry.is_dir ? openFs(entry.path) : null" class="text-lg" :title="entry.is_dir ? '폴더 열기' : '파일'">{{ entry.is_dir ? '▸' : '·' }}</button>
+          <button @dblclick="entry.is_dir ? openFs(entry.path) : downloadFs(entry)" class="min-w-0 text-left"><span class="block truncate text-sm" :class="entry.readable ? 'text-zinc-200' : 'text-zinc-600'">{{ entry.name }}</span><span v-if="entry.is_symlink" class="text-[10px] text-indigo-400">symlink</span></button>
+          <span class="mono text-[11px] text-zinc-600">{{ entry.is_dir ? '폴더' : formatBytes(entry.size) }}</span><span class="text-[11px] text-zinc-600">{{ entry.mtime ? formatDate(entry.mtime) : '--' }}</span>
+          <div class="flex justify-end gap-1"><button v-if="!entry.is_dir" @click="downloadFs(entry)" class="rounded px-2 py-1 text-[11px] text-indigo-300 hover:bg-indigo-500/10">받기</button><button @click="renameFs(entry)" class="rounded px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800">이름</button><button @click="moveFs(entry)" class="rounded px-2 py-1 text-[11px] text-zinc-400 hover:bg-zinc-800">이동</button><button @click="trashFs(entry)" class="rounded px-2 py-1 text-[11px] text-rose-400 hover:bg-rose-500/10">휴지통</button></div>
+        </div>
+      </div>
+      <div v-if="fsTruncated" class="border-t border-zinc-800 px-4 py-2 text-[11px] text-amber-500">항목이 많아 처음 2,000개만 표시합니다.</div>
+    </section>
+  </main>
 </div>
 
 <script>
@@ -144,6 +170,8 @@ createApp({
     activeView:'download', url:'', inspecting:false, inspection:null, error:'', fileQuery:'', selectedFiles:[],
     destinations:[], destination:'', newFolder:'', starting:false, jobs:[], timer:null,
     installedRoot:'', installedQuery:'', installedFiles:[], installedLoading:false,
+    fsRoots:[], fsPath:'', fsPathInput:'', fsParent:null, fsEntries:[], fsLoading:false,
+    fsError:'', fsShowHidden:false, fsWritable:false, fsTruncated:false,
   }; },
   computed: {
     filteredFiles() { const q=this.fileQuery.trim().toLowerCase(); return !q ? (this.inspection?.files||[]) : this.inspection.files.filter(f => `${f.name} ${f.version||''} ${f.kind||''}`.toLowerCase().includes(q)); },
@@ -169,8 +197,18 @@ createApp({
     statusLabel(status) { return {queued:'대기',downloading:'다운로드 중',done:'완료',error:'오류',cancelled:'취소'}[status]||status; },
     statusClass(status) { return {queued:'bg-zinc-800 text-zinc-400',downloading:'bg-indigo-500/15 text-indigo-300',done:'bg-emerald-500/15 text-emerald-300',error:'bg-rose-500/15 text-rose-300',cancelled:'bg-zinc-800 text-zinc-600'}[status]||'bg-zinc-800'; },
     async loadInstalled() { if(!this.installedRoot)return;this.installedLoading=true;try{const q=new URLSearchParams({root:this.installedRoot,query:this.installedQuery});const data=await this.api('/api/models/installed?'+q);this.installedFiles=data.files||[];}catch(e){this.error=e.message;}finally{this.installedLoading=false;} },
+    async loadFsRoots() { const data=await this.api('/api/models/fs/roots');this.fsRoots=data.roots||[];if(!this.fsPath)this.fsPath=data.home||'/'; },
+    async loadFs() { if(!this.fsPath)return;this.fsLoading=true;this.fsError='';try{const q=new URLSearchParams({path:this.fsPath,show_hidden:String(this.fsShowHidden)});const data=await this.api('/api/models/fs/list?'+q);this.fsPath=data.path;this.fsPathInput=data.path;this.fsParent=data.parent;this.fsEntries=data.entries||[];this.fsWritable=!!data.writable;this.fsTruncated=!!data.truncated;}catch(e){this.fsError=e.message;}finally{this.fsLoading=false;} },
+    async openFs(path) { if(!path)return;const previous=this.fsPath;this.fsPath=path;await this.loadFs();if(this.fsError)this.fsPath=previous; },
+    refreshFs() { this.loadFs(); },
+    async createFsFolder() { const name=prompt('새 폴더 이름');if(!name)return;try{await this.api('/api/models/fs/mkdir',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent:this.fsPath,name})});await this.loadFs();}catch(e){this.fsError=e.message;} },
+    async renameFs(entry) { const name=prompt('새 이름',entry.name);if(!name||name===entry.name)return;try{await this.api('/api/models/fs/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:entry.path,name})});await this.loadFs();}catch(e){this.fsError=e.message;} },
+    async moveFs(entry) { const destination=prompt('이동할 대상 폴더의 전체 경로',this.fsPath);if(!destination||destination===this.fsPath)return;try{await this.api('/api/models/fs/move',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:entry.path,destination})});await this.loadFs();}catch(e){this.fsError=e.message;} },
+    async trashFs(entry) { if(!confirm(`'${entry.name}'을(를) 휴지통으로 보낼까요?\n복구 가능한 방식으로 이동합니다.`))return;try{await this.api('/api/models/fs/trash',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:entry.path})});await this.loadFs();}catch(e){this.fsError=e.message;} },
+    downloadFs(entry) { window.location.href='/api/models/fs/download?'+new URLSearchParams({path:entry.path}); },
+    async uploadFsFile(event) { const file=event.target.files?.[0];if(!file)return;const form=new FormData();form.append('file',file);try{await this.api('/api/models/fs/upload?'+new URLSearchParams({path:this.fsPath}),{method:'POST',body:form});await this.loadFs();}catch(e){this.fsError=e.message;}finally{event.target.value='';} },
   },
-  async mounted() { try{await this.loadDestinations();await this.loadJobs();}catch(e){this.error=e.message;}this.timer=setInterval(this.loadJobs,1000); },
+  async mounted() { try{await Promise.all([this.loadDestinations(),this.loadJobs(),this.loadFsRoots()]);}catch(e){this.error=e.message;}this.timer=setInterval(this.loadJobs,1000); },
   beforeUnmount() { clearInterval(this.timer); },
 }).mount('#app');
 </script>

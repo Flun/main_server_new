@@ -1,0 +1,12 @@
+[Unit]
+Description=GPU auto tune (power limit / clock / fan)
+After=graphical.target multi-user.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/gpu-tune.sh
+RemainAfterExit=yes
+TimeoutStartSec=60
+
+[Install]
+WantedBy=multi-user.target

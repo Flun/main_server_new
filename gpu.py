@@ -14,6 +14,7 @@ GPU_SERVICE_LABELS = {
     "llama": {"label": "llama.cpp", "color": "sky"},
     "bot": {"label": "봇", "color": "emerald"},
     "watcher": {"label": "와처", "color": "violet"},
+    "system": {"label": "OS / 디스플레이 / 드라이버", "color": "zinc"},
 }
 
 
@@ -40,12 +41,35 @@ def _nvml_backend():
             temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
             power = None
             power_max = None
+            power_min = None
+            power_default = None
+            clock_graphics = None
+            clock_max_graphics = None
+            fan_speed = None
             try:
                 power = pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
             except Exception:
                 pass
             try:
                 power_max = pynvml.nvmlDeviceGetEnforcedPowerLimit(h) / 1000.0
+            except Exception:
+                pass
+            try:
+                power_min, _ = pynvml.nvmlDeviceGetPowerManagementLimitConstraints(h)
+                power_min /= 1000.0
+            except Exception:
+                pass
+            try:
+                power_default = pynvml.nvmlDeviceGetPowerManagementDefaultLimit(h) / 1000.0
+            except Exception:
+                pass
+            try:
+                clock_graphics = pynvml.nvmlDeviceGetClockInfo(h, pynvml.NVML_CLOCK_GRAPHICS)
+                clock_max_graphics = pynvml.nvmlDeviceGetMaxClockInfo(h, pynvml.NVML_CLOCK_GRAPHICS)
+            except Exception:
+                pass
+            try:
+                fan_speed = pynvml.nvmlDeviceGetFanSpeed(h)
             except Exception:
                 pass
             try:
@@ -75,6 +99,11 @@ def _nvml_backend():
                     "temp": temp,
                     "power": power,
                     "power_max": power_max,
+                    "power_min_limit": power_min,
+                    "power_default_limit": power_default,
+                    "clock_graphics": clock_graphics,
+                    "clock_max_graphics": clock_max_graphics,
+                    "fan_speed": fan_speed,
                 }
             )
     except Exception:
@@ -137,6 +166,20 @@ def get_gpu_topology():
         gpu = by_uuid.get(process.get("gpu_uuid"))
         if gpu is not None:
             gpu["processes"].append(process)
+    # NVML의 총 사용량에는 Xorg/Wayland, 프레임버퍼, 드라이버 예약분처럼
+    # compute-apps 목록에 나타나지 않는 메모리가 포함됩니다. 그 차이를 별도
+    # 영역으로 보여 주면 서비스별 사용량의 합과 실제 총량이 일치합니다.
+    for gpu in gpus:
+        accounted = sum(p.get("used_mb") or 0 for p in gpu["processes"])
+        system_mb = max(0, int(gpu.get("vram_used") or 0) - accounted)
+        gpu["system_vram_used_mb"] = system_mb
+        gpu["system_vram_used_gb"] = round(system_mb / 1024, 2)
+        if system_mb:
+            gpu["processes"].append({
+                "gpu_uuid": gpu.get("uuid"), "pid": None, "used_mb": system_mb,
+                "vram_used_gb": round(system_mb / 1024, 2), "name": "unreported-vram",
+                "service": "system", "service_label": GPU_SERVICE_LABELS["system"]["label"],
+            })
     return {"available": bool(gpus), "gpus": gpus, "processes": processes}
 
 

@@ -493,7 +493,10 @@ def index():
 
 @app.get("/models", response_class=HTMLResponse)
 def models_page():
-    return FileResponse(os.path.join(BASE_DIR, "models.html"))
+    return FileResponse(
+        os.path.join(BASE_DIR, "models.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
 
 
 @app.get("/media", response_class=HTMLResponse)
@@ -610,6 +613,12 @@ def gpus():
             "running": _service_state(name)["running"],
         }
     topo["services"]["llama"]["offload"] = parse_llama_offload(services["llama"].log_file)
+    system_mb = sum(gpu.get("system_vram_used_mb") or 0 for gpu in topo.get("gpus", []))
+    topo["services"]["system"] = {
+        "name": "system", "label": "OS / 디스플레이 / 드라이버", "color": "zinc",
+        "configured_devices": [], "active_gpu_indexes": [],
+        "vram_used_gb": round(system_mb / 1024, 2), "running": True,
+    }
     return topo
 
 
@@ -1108,7 +1117,14 @@ def presets_save(presets: dict):
 def linux_settings_get():
     if IS_WINDOWS:
         return {"platform": "windows", "settings": {}, "effective": {}}
-    return {"platform": "linux", "settings": settings.all(), "effective": settings.all()}
+    enabled = subprocess.run(
+        ["systemctl", "--user", "is-enabled", "main_server.service"],
+        capture_output=True, text=True,
+    ).returncode == 0
+    return {
+        "platform": "linux", "settings": settings.all(), "effective": settings.all(),
+        "manager_service": {"enabled": enabled, "unit": "main_server.service", "linger": True},
+    }
 
 
 @app.post("/api/linux-settings")
@@ -1119,6 +1135,94 @@ def linux_settings_save(data: dict):
     scan_llama_versions()
     scan_gguf_models()
     return {"ok": True, "effective": effective}
+
+
+GPU_CONTROL_HELPER = "/usr/local/sbin/main-server-gpu-control"
+GPU_TUNE_CONFIG = "/etc/main-server/gpu-tune.conf"
+
+
+def _gpu_tuning_snapshot():
+    fields = (
+        "index,name,power.draw,power.limit,power.default_limit,power.min_limit,"
+        "power.max_limit,clocks.current.graphics,clocks.max.graphics,fan.speed"
+    )
+    result = subprocess.run(
+        ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=8,
+    )
+    if result.returncode:
+        raise HTTPException(503, result.stderr.strip() or "NVIDIA GPU 정보를 읽지 못했습니다")
+    configured = {}
+    try:
+        for line in Path(GPU_TUNE_CONFIG).read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                configured[key.strip()] = int(value.strip())
+    except (OSError, ValueError):
+        configured = {"GPU_INDEX": 0, "POWER_LIMIT": 280, "CLOCK_MAX": 1800, "FAN_PERCENT": 65}
+
+    def number(value, integer=False):
+        value = value.strip()
+        if value in {"", "N/A", "[N/A]"}:
+            return None
+        return int(float(value)) if integer else round(float(value), 1)
+
+    gpus = []
+    for line in result.stdout.strip().splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) != 10:
+            continue
+        gpu = {
+            "index": int(parts[0]), "name": parts[1], "power_draw": number(parts[2]),
+            "power_limit": number(parts[3]), "power_default": number(parts[4]),
+            "power_min": number(parts[5]), "power_max": number(parts[6]),
+            "clock_current": number(parts[7], True), "clock_hardware_max": number(parts[8], True),
+            "fan_speed": number(parts[9], True), "configured": None,
+        }
+        if configured.get("GPU_INDEX") == gpu["index"]:
+            gpu["configured"] = {
+                "power_limit": configured.get("POWER_LIMIT"),
+                "clock_max": configured.get("CLOCK_MAX"),
+                "fan_percent": configured.get("FAN_PERCENT"),
+            }
+        gpus.append(gpu)
+    return {"available": bool(gpus), "gpus": gpus, "service": "gpu-tune.service"}
+
+
+@app.get("/api/gpu/tuning")
+def gpu_tuning_get():
+    if IS_WINDOWS:
+        raise HTTPException(400, "Linux NVIDIA 환경에서만 지원합니다")
+    return _gpu_tuning_snapshot()
+
+
+@app.post("/api/gpu/tuning")
+def gpu_tuning_set(data: dict):
+    if IS_WINDOWS:
+        raise HTTPException(400, "Linux NVIDIA 환경에서만 지원합니다")
+    if not os.path.isfile(GPU_CONTROL_HELPER):
+        raise HTTPException(503, "GPU 제어 helper가 설치되지 않았습니다")
+    action = str(data.get("action") or "set")
+    try:
+        gpu_index = int(data.get("gpu_index", 0))
+        if action == "reset":
+            command = ["sudo", "-n", GPU_CONTROL_HELPER, "reset", str(gpu_index)]
+        elif action == "set":
+            power = int(data["power_limit"])
+            clock = int(data["clock_max"])
+            fan = int(data["fan_percent"])
+            command = ["sudo", "-n", GPU_CONTROL_HELPER, "set", str(gpu_index), str(power), str(clock), str(fan)]
+        else:
+            raise ValueError("지원하지 않는 작업입니다")
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(400, f"GPU 설정값이 올바르지 않습니다: {error}") from error
+    result = subprocess.run(command, capture_output=True, text=True, timeout=20)
+    if result.returncode:
+        raise HTTPException(400, result.stderr.strip() or result.stdout.strip() or "GPU 설정 적용 실패")
+    time.sleep(0.3)
+    snapshot = _gpu_tuning_snapshot()
+    snapshot.update({"ok": True, "message": result.stdout.strip()})
+    return snapshot
 
 
 COMFY_CONFIRM_HEADER = "x-comfyui-stop-confirm"

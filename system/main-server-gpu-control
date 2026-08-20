@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+CONFIG=/etc/main-server/gpu-tune.conf
+NVIDIA_SETTINGS=/usr/local/bin/nvidia-settings-610
+
+die() { echo "$*" >&2; exit 2; }
+is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
+
+load_config() {
+  GPU_INDEX=0 POWER_LIMIT=280 CLOCK_MAX=1800 CLOCK_AUTO=0 FAN_PERCENT=65 FAN_AUTO=0
+  if [[ -r "$CONFIG" ]]; then
+    # The file is root-owned and values are validated before every write.
+    # shellcheck disable=SC1090
+    source "$CONFIG"
+  fi
+}
+
+validate() {
+  is_uint "$GPU_INDEX" && is_uint "$POWER_LIMIT" && is_uint "$CLOCK_MAX" && is_uint "$FAN_PERCENT" || die "모든 값은 0 이상의 정수여야 합니다"
+  (( FAN_PERCENT >= 0 && FAN_PERCENT <= 100 )) || die "팬 속도는 0~100%여야 합니다"
+  (( CLOCK_MAX >= 210 && CLOCK_MAX <= 5000 )) || die "클럭 상한은 210~5000MHz여야 합니다"
+  IFS=, read -r min_power max_power < <(nvidia-smi -i "$GPU_INDEX" --query-gpu=power.min_limit,power.max_limit --format=csv,noheader,nounits | tr -d ' ')
+  min_power=${min_power%.*}; max_power=${max_power%.*}
+  (( POWER_LIMIT >= min_power && POWER_LIMIT <= max_power )) || die "파워리밋 허용 범위: ${min_power}~${max_power}W"
+}
+
+apply_fan() {
+  export XAUTHORITY=/run/user/1000/gdm/Xauthority
+  for sock in /tmp/.X11-unix/X*; do
+    [[ -S "$sock" ]] || continue
+    display=":${sock##*X}"
+    if DISPLAY="$display" "$NVIDIA_SETTINGS" -q "[gpu:${GPU_INDEX}]/GPUCurrentFanSpeed" >/dev/null 2>&1; then
+      DISPLAY="$display" "$NVIDIA_SETTINGS" -a "[gpu:${GPU_INDEX}]/GPUFanControlState=1" >/dev/null
+      DISPLAY="$display" "$NVIDIA_SETTINGS" -a "[fan:${GPU_INDEX}]/GPUTargetFanSpeed=${FAN_PERCENT}" >/dev/null
+      echo "팬 ${FAN_PERCENT}% 적용 (DISPLAY=$display)"
+      return 0
+    fi
+  done
+  return 1
+}
+
+apply_all() {
+  validate
+  nvidia-smi -i "$GPU_INDEX" -pl "$POWER_LIMIT" >/dev/null
+  if (( CLOCK_AUTO )); then nvidia-smi -i "$GPU_INDEX" -rgc >/dev/null
+  else nvidia-smi -i "$GPU_INDEX" -lgc "0,${CLOCK_MAX}" >/dev/null; fi
+  if (( FAN_AUTO )); then
+    export XAUTHORITY=/run/user/1000/gdm/Xauthority
+    for sock in /tmp/.X11-unix/X*; do
+      [[ -S "$sock" ]] || continue
+      DISPLAY=":${sock##*X}" "$NVIDIA_SETTINGS" -a "[gpu:${GPU_INDEX}]/GPUFanControlState=0" >/dev/null 2>&1 || true
+    done
+  else
+    apply_fan || echo "X 세션이 없어 팬 설정은 로그인 후 재적용해야 합니다" >&2
+  fi
+  echo "GPU ${GPU_INDEX}: ${POWER_LIMIT}W / ${CLOCK_MAX}MHz / fan $([[ $FAN_AUTO == 1 ]] && echo auto || echo ${FAN_PERCENT}%)"
+}
+
+write_config() {
+  install -d -m 0755 /etc/main-server
+  umask 022
+  printf 'GPU_INDEX=%s\nPOWER_LIMIT=%s\nCLOCK_MAX=%s\nCLOCK_AUTO=%s\nFAN_PERCENT=%s\nFAN_AUTO=%s\n' \
+    "$GPU_INDEX" "$POWER_LIMIT" "$CLOCK_MAX" "$CLOCK_AUTO" "$FAN_PERCENT" "$FAN_AUTO" > "$CONFIG.tmp"
+  chown root:root "$CONFIG.tmp"
+  chmod 0644 "$CONFIG.tmp"
+  mv "$CONFIG.tmp" "$CONFIG"
+}
+
+load_config
+case "${1:-apply}" in
+  apply)
+    apply_all
+    ;;
+  set)
+    [[ $# -eq 5 ]] || die "사용법: $0 set GPU POWER_W CLOCK_MHZ FAN_PERCENT"
+    GPU_INDEX=$2 POWER_LIMIT=$3 CLOCK_MAX=$4 CLOCK_AUTO=0 FAN_PERCENT=$5 FAN_AUTO=0
+    validate
+    write_config
+    apply_all
+    ;;
+  reset)
+    [[ $# -eq 2 ]] || die "사용법: $0 reset GPU"
+    GPU_INDEX=$2
+    is_uint "$GPU_INDEX" || die "GPU 번호가 올바르지 않습니다"
+    POWER_LIMIT=$(nvidia-smi -i "$GPU_INDEX" --query-gpu=power.default_limit --format=csv,noheader,nounits | cut -d. -f1 | tr -d ' ')
+    CLOCK_MAX=$(nvidia-smi -i "$GPU_INDEX" --query-gpu=clocks.max.graphics --format=csv,noheader,nounits | cut -d. -f1 | tr -d ' ')
+    CLOCK_AUTO=1 FAN_PERCENT=0 FAN_AUTO=1
+    validate
+    write_config
+    nvidia-smi -i "$GPU_INDEX" -pl "$POWER_LIMIT" >/dev/null
+    nvidia-smi -i "$GPU_INDEX" -rgc >/dev/null
+    export XAUTHORITY=/run/user/1000/gdm/Xauthority
+    for sock in /tmp/.X11-unix/X*; do
+      [[ -S "$sock" ]] || continue
+      DISPLAY=":${sock##*X}" "$NVIDIA_SETTINGS" -a "[gpu:${GPU_INDEX}]/GPUFanControlState=0" >/dev/null 2>&1 || true
+    done
+    echo "GPU ${GPU_INDEX} 기본값 복원"
+    ;;
+  *) die "지원하지 않는 명령: $1" ;;
+esac

@@ -1,8 +1,4 @@
-"""Model Hub API: inspect model links, choose files, and download safely.
-
-The hub intentionally manages model folders only. General filesystem and
-application settings belong to the main dashboard, not the model downloader.
-"""
+"""Model Hub API: model downloads plus a local Ubuntu filesystem browser."""
 
 import json
 import os
@@ -16,7 +12,8 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from config import BASE_DIR, settings
@@ -57,8 +54,90 @@ class FolderRequest(BaseModel):
     name: str
 
 
+class FsPathRequest(BaseModel):
+    path: str
+
+
+class FsCreateRequest(BaseModel):
+    parent: str
+    name: str
+
+
+class FsRenameRequest(BaseModel):
+    path: str
+    name: str
+
+
+class FsMoveRequest(BaseModel):
+    path: str
+    destination: str
+
+
 def _resolved(path: str | Path) -> Path:
     return Path(path).expanduser().resolve()
+
+
+def _fs_path(raw: str, *, must_exist: bool = True) -> Path:
+    if not str(raw or "").strip():
+        raise HTTPException(400, "경로를 입력하세요")
+    try:
+        path = Path(raw).expanduser().resolve(strict=must_exist)
+    except FileNotFoundError as error:
+        raise HTTPException(404, f"경로가 없습니다: {raw}") from error
+    except (OSError, RuntimeError) as error:
+        raise HTTPException(400, f"경로를 해석하지 못했습니다: {error}") from error
+    return path
+
+
+def _fs_entry_path(raw: str) -> Path:
+    """Resolve the parent, but keep the final symlink as the managed entry."""
+    source = Path(str(raw or "")).expanduser()
+    if not str(raw or "").strip() or source.name in {"", ".", ".."}:
+        raise HTTPException(400, "관리할 항목 경로가 올바르지 않습니다")
+    try:
+        target = source.parent.resolve(strict=True) / source.name
+        target.lstat()
+    except FileNotFoundError as error:
+        raise HTTPException(404, f"경로가 없습니다: {raw}") from error
+    except OSError as error:
+        raise HTTPException(400, f"경로를 해석하지 못했습니다: {error}") from error
+    return target
+
+
+def _leaf_name(name: str) -> str:
+    value = str(name or "").strip()
+    if not value or value in {".", ".."} or "/" in value or "\\" in value or "\0" in value:
+        raise HTTPException(400, "파일 또는 폴더 이름이 올바르지 않습니다")
+    return value
+
+
+def _fs_roots() -> list[dict[str, str]]:
+    candidates = [
+        ("파일 시스템", Path("/")), ("내 홈", Path.home()),
+        ("서비스", Path("/srv")), ("마운트", Path("/mnt")),
+        ("외장/추가 볼륨", Path("/media") / os.environ.get("USER", "flux")),
+        ("임시 폴더", Path("/tmp")),
+    ]
+    result, seen = [], set()
+    for label, path in candidates:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            continue
+        if not resolved.exists() or str(resolved) in seen:
+            continue
+        seen.add(str(resolved))
+        result.append({"label": label, "path": str(resolved)})
+    return result
+
+
+def _protected_trash_target(path: Path) -> bool:
+    protected = {
+        Path("/"), Path.home(), Path("/home"), Path("/usr"), Path("/etc"),
+        Path("/var"), Path("/opt"), Path("/srv"), Path("/mnt"), Path("/media"), Path("/tmp"),
+    }
+    protected.add(Path(BASE_DIR).resolve())
+    return path in protected
 
 
 def _base_roots() -> list[dict[str, str]]:
@@ -284,6 +363,147 @@ def _direct_inspect(url: str) -> dict[str, Any]:
 @router.get("/destinations")
 def destinations():
     return {"destinations": _destination_items()}
+
+
+@router.get("/fs/roots")
+def filesystem_roots():
+    return {"roots": _fs_roots(), "home": str(Path.home())}
+
+
+@router.get("/fs/list")
+def filesystem_list(path: str = "~", show_hidden: bool = False):
+    current = _fs_path(path)
+    if not current.is_dir():
+        raise HTTPException(400, "폴더 경로가 아닙니다")
+    entries = []
+    try:
+        for item in current.iterdir():
+            if not show_hidden and item.name.startswith("."):
+                continue
+            try:
+                stat = item.stat(follow_symlinks=False)
+                is_dir = item.is_dir()
+                entries.append({
+                    "name": item.name, "path": str(item), "is_dir": is_dir,
+                    "is_symlink": item.is_symlink(), "size": None if is_dir else stat.st_size,
+                    "mtime": int(stat.st_mtime), "readable": os.access(item, os.R_OK),
+                    "writable": os.access(item, os.W_OK),
+                })
+            except OSError:
+                entries.append({
+                    "name": item.name, "path": str(item), "is_dir": False,
+                    "is_symlink": item.is_symlink(), "size": None, "mtime": None,
+                    "readable": False, "writable": False,
+                })
+            if len(entries) >= 2000:
+                break
+    except PermissionError as error:
+        raise HTTPException(403, f"이 폴더를 읽을 권한이 없습니다: {current}") from error
+    except OSError as error:
+        raise HTTPException(400, f"폴더를 읽지 못했습니다: {error}") from error
+    entries.sort(key=lambda item: (not item["is_dir"], item["name"].lower()))
+    parent = str(current.parent) if current != current.parent else None
+    return {
+        "path": str(current), "parent": parent, "entries": entries,
+        "truncated": len(entries) >= 2000, "writable": os.access(current, os.W_OK),
+    }
+
+
+@router.post("/fs/mkdir")
+def filesystem_mkdir(request: FsCreateRequest):
+    parent = _fs_path(request.parent)
+    if not parent.is_dir():
+        raise HTTPException(400, "상위 경로가 폴더가 아닙니다")
+    target = parent / _leaf_name(request.name)
+    try:
+        target.mkdir()
+    except FileExistsError as error:
+        raise HTTPException(409, "같은 이름의 항목이 이미 있습니다") from error
+    except PermissionError as error:
+        raise HTTPException(403, "이 위치에 폴더를 만들 권한이 없습니다") from error
+    return {"ok": True, "path": str(target)}
+
+
+@router.post("/fs/rename")
+def filesystem_rename(request: FsRenameRequest):
+    source = _fs_entry_path(request.path)
+    target = source.with_name(_leaf_name(request.name))
+    if target.exists():
+        raise HTTPException(409, "같은 이름의 항목이 이미 있습니다")
+    try:
+        source.rename(target)
+    except PermissionError as error:
+        raise HTTPException(403, "이 항목의 이름을 바꿀 권한이 없습니다") from error
+    except OSError as error:
+        raise HTTPException(400, f"이름 변경 실패: {error}") from error
+    return {"ok": True, "path": str(target)}
+
+
+@router.post("/fs/move")
+def filesystem_move(request: FsMoveRequest):
+    source = _fs_entry_path(request.path)
+    destination = _fs_path(request.destination)
+    if not destination.is_dir():
+        raise HTTPException(400, "이동 대상은 폴더여야 합니다")
+    target = destination / source.name
+    if target.exists():
+        raise HTTPException(409, "대상 폴더에 같은 이름의 항목이 있습니다")
+    try:
+        shutil.move(str(source), str(target))
+    except PermissionError as error:
+        raise HTTPException(403, "이 항목을 이동할 권한이 없습니다") from error
+    except OSError as error:
+        raise HTTPException(400, f"이동 실패: {error}") from error
+    return {"ok": True, "path": str(target)}
+
+
+@router.post("/fs/trash")
+def filesystem_trash(request: FsPathRequest):
+    target = _fs_entry_path(request.path)
+    if _protected_trash_target(target):
+        raise HTTPException(400, "시스템 핵심 경로 자체는 휴지통으로 보낼 수 없습니다")
+    if target.is_symlink():
+        raise HTTPException(400, "심볼릭 링크는 대상 오삭제 방지를 위해 휴지통 기능에서 제외됩니다")
+    try:
+        from send2trash import send2trash
+        send2trash(str(target))
+    except ImportError as error:
+        raise HTTPException(503, "send2trash 패키지가 설치되지 않았습니다") from error
+    except PermissionError as error:
+        raise HTTPException(403, "이 항목을 휴지통으로 보낼 권한이 없습니다") from error
+    except OSError as error:
+        raise HTTPException(400, f"휴지통 이동 실패: {error}") from error
+    return {"ok": True, "recoverable": True}
+
+
+@router.post("/fs/upload")
+async def filesystem_upload(path: str, file: UploadFile = File(...)):
+    destination = _fs_path(path)
+    if not destination.is_dir():
+        raise HTTPException(400, "업로드 대상은 폴더여야 합니다")
+    target = destination / _leaf_name(file.filename or "upload.bin")
+    if target.exists():
+        raise HTTPException(409, "같은 이름의 파일이 이미 있습니다")
+    try:
+        with target.open("xb") as output:
+            while chunk := await file.read(1024 * 1024):
+                output.write(chunk)
+    except PermissionError as error:
+        raise HTTPException(403, "이 위치에 업로드할 권한이 없습니다") from error
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise
+    finally:
+        await file.close()
+    return {"ok": True, "path": str(target), "size": target.stat().st_size}
+
+
+@router.get("/fs/download")
+def filesystem_download(path: str):
+    target = _fs_path(path)
+    if not target.is_file():
+        raise HTTPException(400, "다운로드할 파일을 선택하세요")
+    return FileResponse(target, filename=target.name)
 
 
 @router.post("/folders")
