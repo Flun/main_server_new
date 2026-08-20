@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LoRA Dataset Studio</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        [v-cloak]{display:none} body{background:#09090b;color:#e4e4e7}.panel{background:#18181b;border:1px solid #27272a;border-radius:.65rem}.input{width:100%;background:#09090b;border:1px solid #3f3f46;border-radius:.4rem;padding:.55rem .7rem;outline:none}.input:focus{border-color:#10b981}.btn{border-radius:.4rem;padding:.5rem .8rem;font-size:.875rem;font-weight:600}.btn:disabled{cursor:wait;opacity:.55}.btn-primary{background:#10b981;color:#052e16}.btn-muted{background:#27272a;color:#e4e4e7}.badge{border-radius:999px;padding:.15rem .5rem;font-size:.68rem;font-weight:700}
+    </style>
+</head>
+<body>
+<div id="app" v-cloak class="min-h-screen">
+    <header class="border-b border-zinc-800 bg-zinc-950 px-5 py-4">
+        <div class="mx-auto flex max-w-[1700px] items-center justify-between">
+            <div class="flex items-center gap-4"><a href="/" class="btn btn-muted">← Console</a><div><h1 class="text-xl font-semibold">LoRA Dataset Studio</h1><p class="text-xs text-zinc-500">수집 · 동일인 선별 · 중복/품질 검수</p></div></div>
+            <button v-if="dataset" @click="refreshAll" class="btn btn-muted">새로고침</button>
+        </div>
+    </header>
+    <div v-if="actionNotice" class="fixed right-5 top-5 z-50 max-w-md rounded-lg border border-emerald-500/40 bg-zinc-950 px-4 py-3 text-sm text-emerald-300 shadow-xl">{{actionNotice}}</div>
+    <main class="mx-auto grid max-w-[1700px] gap-5 p-5 min-[1200px]:grid-cols-[260px_360px_minmax(0,1fr)]">
+        <aside class="panel p-4 space-y-4">
+            <div><h2 class="font-semibold">데이터셋</h2><p class="text-xs text-zinc-500">인물별로 분리해서 관리합니다.</p></div>
+            <div class="space-y-2"><input v-model="newDataset.name" class="input" placeholder="데이터셋 이름"><input v-model="newDataset.subject_name" class="input" placeholder="인물 이름"><button @click="createDataset" class="btn btn-primary w-full">새 데이터셋</button></div>
+            <div class="space-y-2 border-t border-zinc-800 pt-4">
+                <button v-for="item in datasets" :key="item.id" @click="selectDataset(item.id)" class="w-full rounded-lg border p-3 text-left" :class="dataset?.id===item.id?'border-emerald-500 bg-emerald-500/10':'border-zinc-800 bg-zinc-950'">
+                    <div class="font-medium">{{item.name}}</div><div class="mt-1 text-xs text-zinc-500">{{item.subject_name || '인물 미지정'}} · {{totalCount(item)}}장</div>
+                </button>
+            </div>
+        </aside>
+
+        <aside v-if="dataset" class="space-y-5">
+            <section class="panel p-4 space-y-3">
+                <div class="flex items-center justify-between"><h2 class="font-semibold">1. 기준 얼굴</h2><span class="text-xs text-zinc-500">{{dataset.reference_count}}개</span></div>
+                <p class="text-xs text-zinc-500">정면·45도 등 선명한 단독 사진 3~5장을 권장합니다.</p>
+                <input type="file" multiple accept="image/*" @change="uploadReferences" class="block w-full text-xs text-zinc-400">
+                <div v-if="references.length" class="grid grid-cols-3 gap-2 pt-1">
+                    <article v-for="reference in references" :key="reference.id" class="group relative overflow-hidden rounded border border-zinc-700 bg-zinc-950">
+                        <a :href="reference.thumbnail_url" target="_blank"><img :src="reference.thumbnail_url" class="aspect-square w-full object-cover"></a>
+                        <button @click="deleteReference(reference)" class="absolute right-1 top-1 rounded bg-black/80 px-1.5 py-0.5 text-xs text-rose-300">삭제</button>
+                        <div class="truncate px-1 py-1 text-[10px] text-zinc-500" :title="reference.original_name">{{reference.original_name}}</div>
+                    </article>
+                </div>
+            </section>
+            <section class="panel p-4 space-y-3">
+                <h2 class="font-semibold">2. 사진 수집</h2>
+                <div class="rounded border border-emerald-500/30 bg-emerald-500/5 p-3 space-y-2"><div class="text-xs font-semibold text-emerald-300">웹 이미지 검색 · 추천</div><input v-model="forms.search.query" class="input" placeholder="인물명 portrait"><input v-model.number="forms.search.limit" type="number" min="1" max="500" class="input"><p class="text-[11px] text-zinc-500">입력 개수는 목표치입니다. 여러 보조 검색어로 부족분을 채우며 실제 후보가 부족하거나 원본 다운로드가 막히면 적게 저장될 수 있습니다.</p><button :disabled="isSubmitting('collect_search')" @click="createJob('collect_search', forms.search)" class="btn btn-primary w-full">{{isSubmitting('collect_search')?'검색 등록 중…':'이미지 검색'}}</button></div>
+                <details class="rounded border border-zinc-800 p-3"><summary class="cursor-pointer text-xs text-zinc-500">기존 Bing 수집기</summary><div class="mt-2 space-y-2"><p class="text-[11px] text-amber-400/80">한글 검색에서 무관한 결과가 확인되어 보조용으로만 남겨둡니다.</p><input v-model="forms.bing.query" class="input" placeholder="검색어"><input v-model.number="forms.bing.limit" type="number" min="1" max="1000" class="input"><button :disabled="isSubmitting('collect_bing')" @click="createJob('collect_bing', forms.bing)" class="btn btn-muted w-full">{{isSubmitting('collect_bing')?'등록 중…':'Bing 수집'}}</button></div></details>
+                <div class="rounded border border-zinc-800 p-3 space-y-2">
+                    <div class="flex items-center justify-between"><span class="text-xs font-semibold text-zinc-400">Instagram</span><span class="badge" :class="cookieStatus.configured?'bg-emerald-500/15 text-emerald-300':'bg-amber-500/15 text-amber-300'">{{cookieStatus.configured?'cookies.txt 설정됨':'쿠키 미설정'}}</span></div>
+                    <input v-model="forms.instagram.url" class="input" placeholder="계정명 또는 Instagram 프로필 URL">
+                    <div class="grid grid-cols-2 gap-2"><input v-model.number="forms.instagram.limit" type="number" min="1" max="1000" class="input"><select v-model="forms.instagram.browser" class="input"><option value="">쿠키 없이 시도</option><option>chrome</option><option>edge</option><option>firefox</option><option>brave</option></select></div>
+                    <label class="flex gap-2 text-xs"><input type="checkbox" value="tagged" v-model="forms.instagram.include"> 태그 사진 포함</label>
+                    <div class="rounded bg-zinc-900 p-2 text-[11px] text-zinc-500"><p>Chrome을 켠 채 사용하려면 로컬 동기화 확장을 한 번 설치하고 서버 공용 쿠키 저장소로 동기화하세요. 한 번 동기화하면 모든 데이터셋에서 함께 사용됩니다.</p><div class="mt-2 flex flex-wrap gap-2"><a href="/api/dataset-tools/chrome-cookie-extension.zip" class="text-emerald-400 underline">Chrome 동기화 확장 다운로드</a><span>설치 폴더: C:\main_server\chrome_instagram_cookie_bridge</span></div><p class="mt-2">또는 서버 공용 Instagram cookies.txt를 직접 업로드할 수 있습니다.</p><div class="mt-2 flex items-center gap-2"><input type="file" accept=".txt,text/plain" @change="uploadInstagramCookies" class="min-w-0 flex-1"><button v-if="cookieStatus.configured" @click="deleteInstagramCookies" class="text-rose-400">공용 쿠키 삭제</button></div></div>
+                    <button :disabled="isSubmitting('collect_instagram')" @click="createJob('collect_instagram', forms.instagram)" class="btn btn-muted w-full">{{isSubmitting('collect_instagram')?'등록 중…':'Instagram 수집'}}</button>
+                </div>
+                <div class="rounded border border-zinc-800 p-3 space-y-2"><div class="text-xs font-semibold text-zinc-400">로컬 폴더</div><input v-model="forms.local.path" class="input" placeholder="C:\photos\person"><button :disabled="isSubmitting('import_folder')" @click="createJob('import_folder', forms.local)" class="btn btn-muted w-full">{{isSubmitting('import_folder')?'등록 중…':'폴더 가져오기'}}</button></div>
+                <div class="rounded border border-zinc-800 p-3 space-y-2"><div class="text-xs font-semibold text-zinc-400">브라우저 업로드</div><input type="file" multiple accept="image/*" @change="uploadSources" class="block w-full text-xs text-zinc-400"></div>
+            </section>
+            <section class="panel p-4 space-y-3">
+                <h2 class="font-semibold">3. 분석</h2>
+                <label class="block text-xs text-zinc-500">동일인 유사도 {{forms.analyze.similarity_threshold}}</label><input v-model.number="forms.analyze.similarity_threshold" type="range" min="0.2" max="0.8" step="0.01" class="w-full accent-emerald-500">
+                <div class="grid grid-cols-2 gap-2"><label class="text-xs text-zinc-500">최소 변<input v-model.number="forms.analyze.min_side" type="number" class="input mt-1"></label><label class="text-xs text-zinc-500">블러 기준<input v-model.number="forms.analyze.blur_threshold" type="number" class="input mt-1"></label></div>
+                <button :disabled="isSubmitting('analyze')" @click="createJob('analyze', forms.analyze)" class="btn btn-primary w-full">{{isSubmitting('analyze')?'분석 등록 중…':'얼굴·품질·중복 분석'}}</button>
+                <button :disabled="isSubmitting('export')" @click="createJob('export', {})" class="btn btn-muted w-full">{{isSubmitting('export')?'등록 중…':'승인 이미지 ZIP 생성'}}</button>
+                <a :href="`/api/datasets/${dataset.id}/export`" class="btn btn-muted block w-full text-center">최근 ZIP 다운로드</a>
+                <p class="text-[11px] text-amber-400/80">기본 얼굴 모델 가중치는 비상업적 연구용 조건을 확인해야 합니다.</p>
+            </section>
+            <section class="panel p-4 space-y-2">
+                <h2 class="font-semibold">작업</h2>
+                <div v-for="job in jobs.slice(0,8)" :key="job.id" class="rounded border border-zinc-800 bg-zinc-950 p-2 text-xs">
+                    <div class="flex justify-between"><span>{{jobLabel(job.kind)}} <span v-if="job.result_count" class="text-zinc-600">· {{job.result_count}}장</span></span><span :class="job.status==='failed'?'text-rose-400':'text-zinc-500'">{{job.status}}</span></div>
+                    <div class="mt-2 h-1 overflow-hidden rounded bg-zinc-800"><div class="h-full bg-emerald-500" :style="{width:(job.progress*100)+'%'}"></div></div>
+                    <div class="mt-1 text-zinc-500" :title="job.error || job.message">{{jobMessage(job)}}</div>
+                    <button v-if="['queued','running'].includes(job.status)" @click="cancelJob(job.id)" class="mt-1 text-rose-400">취소</button>
+                    <button v-else-if="job.result_count" @click="deleteJobResults(job)" class="mt-1 text-rose-400">이 작업 결과 전체 삭제</button>
+                </div>
+            </section>
+        </aside>
+
+        <section v-if="dataset" class="panel min-w-0 overflow-hidden">
+            <div class="space-y-3 border-b border-zinc-800 p-4"><div class="flex flex-wrap items-center justify-between gap-3"><div><h2 class="font-semibold">검수 갤러리</h2><p class="text-xs text-zinc-500">자동 판정은 언제든 수동으로 변경할 수 있습니다.</p></div><div class="flex flex-wrap gap-2"><button v-for="status in statuses" :key="status" @click="filter=status;loadImages()" class="btn" :class="filter===status?'btn-primary':'btn-muted'">{{statusLabel(status)}} {{statusCount(status)}}</button></div></div>
+                <div class="flex items-center gap-2 rounded border border-zinc-800 bg-zinc-950 p-2"><code class="min-w-0 flex-1 truncate text-[11px] text-zinc-400" :title="currentFolderPath()">{{currentFolderPath()}}</code><button @click="copyFolderPath" class="btn btn-muted shrink-0">{{['all','repaired'].includes(filter)?'분류 루트':'현재 폴더'}} 경로 복사</button></div>
+                <div class="rounded border border-zinc-800 bg-zinc-950 p-2 text-[11px] text-zinc-400"><strong class="text-zinc-200">Q (품질점수)</strong>: 해상도 35% + 얼굴 크기 40% + 선명도 25%로 계산한 0~100점. <strong class="text-zinc-200">S (동일인 점수)</strong>: 기준 얼굴과 가장 가까운 얼굴의 코사인 유사도이며 높을수록 같은 인물일 가능성이 큽니다.</div>
+                <div class="flex flex-wrap gap-2 rounded border border-zinc-800 bg-zinc-950 p-2">
+                    <div v-for="issue in issueFilters" :key="issue.key" class="flex items-center gap-1 rounded bg-zinc-900 p-1">
+                        <span class="px-1 text-xs text-zinc-400">{{issue.label}} {{issueCount(issue.key)}}</span>
+                        <button v-if="issue.repairMode" :disabled="isSubmitting('repair')" @click="repairIssue(issue)" class="btn bg-sky-500/15 px-2 text-sky-300">{{issue.repairLabel}}</button>
+                        <button @click="deleteByIssue(issue)" class="btn bg-rose-500/15 px-2 text-rose-300">삭제</button>
+                    </div>
+                </div>
+                <div class="flex flex-wrap items-end gap-2 rounded border border-zinc-800 bg-zinc-950 p-2"><button @click="deleteRejected" class="btn bg-rose-500/15 text-rose-300">거절+중복 일괄 삭제</button><label class="text-[11px] text-zinc-500">Q 이하<input v-model.number="bulk.quality" type="number" min="0" max="100" class="input mt-1 w-24"></label><button @click="deleteByQuality" class="btn btn-muted">Q 기준 삭제</button><label class="text-[11px] text-zinc-500">S 이하<input v-model.number="bulk.similarity" type="number" min="-1" max="1" step="0.01" class="input mt-1 w-24"></label><button @click="deleteBySimilarity" class="btn btn-muted">S 기준 삭제</button><button @click="deleteCurrentFilter" class="btn bg-rose-500/15 text-rose-300">현재 {{statusLabel(filter)}} 전체 삭제</button></div>
+            </div>
+            <div v-if="images.length" class="grid grid-cols-2 gap-3 p-4 md:grid-cols-3 2xl:grid-cols-4">
+                <article v-for="image in images" :key="image.id" class="overflow-hidden rounded-lg border border-zinc-800 bg-zinc-950">
+                    <div class="relative"><a :href="currentImageUrl(image)" target="_blank"><img :src="currentImageUrl(image)" loading="lazy" class="aspect-square w-full object-cover"></a><span v-if="image.is_repaired" class="absolute left-2 top-2 rounded bg-sky-600/90 px-2 py-1 text-[10px] font-bold text-white">{{repairLabel(image)}}</span></div>
+                    <div class="space-y-2 p-2"><div class="flex justify-between text-[11px]"><span class="badge bg-zinc-800">{{image.status}}</span><span class="text-zinc-500" title="Q=품질점수, S=기준 얼굴 동일인 유사도">Q {{image.quality_score ?? '-'}} · S {{fmtSimilarity(image.target_similarity)}}</span></div><div class="truncate text-[11px] text-zinc-500" :title="image.reason">{{image.reason || `${image.width}×${image.height} / 얼굴 ${image.face_count}`}}</div><div v-if="image.is_repaired" class="grid grid-cols-2 gap-1"><button @click="compareImage=image" class="btn bg-sky-500/15 px-1 text-sky-300">전후 비교</button><button :disabled="restoring===image.id" @click="restoreImage(image)" class="btn bg-amber-500/15 px-1 text-amber-300">{{restoring===image.id?'복원 중…':'원본 복원'}}</button></div><div v-if="repairModes(image).length" class="flex gap-1"><button v-for="repair in repairModes(image)" :key="repair.mode" :disabled="isSubmitting('repair')" @click="repairImage(image,repair.mode)" class="btn flex-1 bg-sky-500/15 px-1 text-sky-300">{{repair.label}}</button></div><div class="grid grid-cols-3 gap-1"><button @click="decide(image,'accepted')" class="btn bg-emerald-500/15 px-1 text-emerald-300">승인</button><button @click="decide(image,'rejected')" class="btn bg-amber-500/15 px-1 text-amber-300">거절</button><button @click="deleteImage(image)" class="btn bg-rose-500/15 px-1 text-rose-300">삭제</button></div></div>
+                </article>
+            </div>
+            <div v-else class="flex min-h-[500px] items-center justify-center text-sm text-zinc-600">표시할 이미지가 없습니다.</div>
+        </section>
+        <section v-else class="panel flex min-h-[600px] items-center justify-center text-zinc-600 min-[1200px]:col-span-2">데이터셋을 만들거나 선택하세요.</section>
+    </main>
+    <div v-if="compareImage" @click.self="compareImage=null" class="fixed inset-0 z-[60] flex items-center justify-center bg-black/85 p-3 md:p-8">
+        <section class="flex max-h-full w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-zinc-700 bg-zinc-950 shadow-2xl">
+            <header class="flex items-center justify-between border-b border-zinc-800 px-4 py-3"><div><h2 class="font-semibold">개선 전후 비교</h2><p class="text-xs text-sky-300">{{repairLabel(compareImage)}}</p></div><button @click="compareImage=null" class="btn btn-muted">닫기</button></header>
+            <div class="grid min-h-0 flex-1 gap-3 overflow-auto p-3 md:grid-cols-2">
+                <figure class="flex min-h-[280px] flex-col rounded-lg border border-zinc-800 bg-black"><figcaption class="px-3 py-2 text-sm font-semibold text-zinc-300">원본</figcaption><a :href="compareImage.original_url" target="_blank" class="flex min-h-0 flex-1 items-center justify-center"><img :src="compareImage.original_url" class="max-h-[70vh] w-full object-contain"></a></figure>
+                <figure class="flex min-h-[280px] flex-col rounded-lg border border-sky-700/60 bg-black"><figcaption class="px-3 py-2 text-sm font-semibold text-sky-300">개선본</figcaption><a :href="currentImageUrl(compareImage)" target="_blank" class="flex min-h-0 flex-1 items-center justify-center"><img :src="currentImageUrl(compareImage)" class="max-h-[70vh] w-full object-contain"></a></figure>
+            </div>
+            <footer class="flex justify-end gap-2 border-t border-zinc-800 p-3"><button :disabled="restoring===compareImage.id" @click="restoreImage(compareImage)" class="btn bg-amber-500/20 text-amber-300">{{restoring===compareImage.id?'복원 중…':'원본으로 복원'}}</button><button @click="compareImage=null" class="btn btn-primary">개선본 유지</button></footer>
+        </section>
+    </div>
+</div>
+<script>
+const {createApp}=Vue;
+createApp({
+    data:()=>({
+        datasets:[], dataset:null, jobs:[], images:[], references:[],
+        cookieStatus:{configured:false}, filter:'all', timer:null, submitting:{}, actionNotice:'', noticeTimer:null, compareImage:null, restoring:null,
+        newDataset:{name:'',subject_name:''},
+        statuses:['all','repaired','accepted','review','rejected','duplicate'],
+        issueFilters:[
+            {key:'multiple_faces',label:'다중 얼굴'},
+            {key:'no_face',label:'얼굴 없음'},
+            {key:'small_face',label:'얼굴 작음',repairMode:'small_face',repairLabel:'일괄 크롭'},
+            {key:'blurry',label:'흐림',repairMode:'blurry',repairLabel:'일괄 선명화'},
+            {key:'low_resolution',label:'저해상도'},
+            {key:'analysis_failed',label:'분석 실패'}
+        ],
+        bulk:{quality:40,similarity:.4},
+        forms:{
+            search:{query:'',limit:100}, bing:{query:'',limit:100},
+            instagram:{url:'',limit:200,browser:'',include:['posts','tagged']},
+            local:{path:''},
+            analyze:{similarity_threshold:.4,min_side:512,min_face_ratio:.04,blur_threshold:65}
+        }
+    }),
+    methods:{
+        async api(url,options){
+            const res=await fetch(url,options);
+            if(!res.ok){let detail='요청 실패';try{detail=(await res.json()).detail||detail}catch{}throw new Error(detail)}
+            return res.json();
+        },
+        async loadDatasets(){this.datasets=await this.api('/api/datasets')},
+        async createDataset(){
+            try{const item=await this.api('/api/datasets',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.newDataset)});this.newDataset={name:'',subject_name:''};await this.loadDatasets();await this.selectDataset(item.id)}catch(e){alert(e.message)}
+        },
+        async selectDataset(id){
+            this.dataset=await this.api(`/api/datasets/${id}`);
+            await Promise.all([this.loadJobs(),this.loadImages(),this.loadReferences(),this.loadCookieStatus()]);
+        },
+        async refreshAll(){
+            if(!this.dataset)return;
+            await this.loadDatasets();
+            this.dataset=await this.api(`/api/datasets/${this.dataset.id}`);
+            await Promise.all([this.loadJobs(),this.loadImages(),this.loadReferences(),this.loadCookieStatus()]);
+        },
+        async loadReferences(){if(this.dataset)this.references=await this.api(`/api/datasets/${this.dataset.id}/references`)},
+        async uploadReferences(event){
+            const form=new FormData();[...event.target.files].forEach(file=>form.append('files',file));
+            try{await this.api(`/api/datasets/${this.dataset.id}/references`,{method:'POST',body:form});event.target.value='';await this.refreshAll()}catch(e){alert(e.message)}
+        },
+        async deleteReference(reference){
+            if(!confirm(`기준 얼굴 '${reference.original_name}'을 삭제할까요?`))return;
+            await this.api(`/api/dataset-references/${reference.id}`,{method:'DELETE'});await this.refreshAll();
+        },
+        async uploadSources(event){
+            const form=new FormData();[...event.target.files].forEach(file=>form.append('files',file));
+            try{await this.api(`/api/datasets/${this.dataset.id}/uploads`,{method:'POST',body:form});event.target.value='';await this.refreshAll()}catch(e){alert(e.message)}
+        },
+        async loadCookieStatus(){this.cookieStatus=await this.api('/api/instagram-cookies')},
+        async uploadInstagramCookies(event){
+            const file=event.target.files[0];if(!file)return;const form=new FormData();form.append('file',file);
+            try{await this.api('/api/instagram-cookies',{method:'POST',body:form});event.target.value='';await this.loadCookieStatus()}catch(e){alert(e.message)}
+        },
+        async deleteInstagramCookies(){
+            if(!confirm('서버 공용 Instagram cookies.txt를 삭제할까요? 모든 데이터셋에 적용됩니다.'))return;
+            await this.api('/api/instagram-cookies',{method:'DELETE'});await this.loadCookieStatus();
+        },
+        async createJob(kind,params){
+            if(this.submitting[kind])return;
+            this.submitting[kind]=true;
+            this.showNotice(`${this.jobLabel(kind)} 요청 전송 중…`);
+            try{
+                await this.api(`/api/datasets/${this.dataset.id}/jobs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({kind,params})});
+                await this.loadJobs();
+                this.showNotice(`${this.jobLabel(kind)} 작업이 등록되었습니다. 아래 작업 목록에서 진행률을 확인하세요.`,4000);
+            }catch(e){this.showNotice('작업 등록 실패');alert(e.message)}
+            finally{this.submitting[kind]=false}
+        },
+        async loadJobs(){if(this.dataset)this.jobs=await this.api(`/api/datasets/${this.dataset.id}/jobs`)},
+        async cancelJob(id){await this.api(`/api/dataset-jobs/${id}/cancel`,{method:'POST'});await this.loadJobs()},
+        async deleteJobResults(job){
+            if(!confirm(`${this.jobLabel(job.kind)} 결과 ${job.result_count}장을 파일까지 모두 삭제할까요?`))return;
+            await this.api(`/api/dataset-jobs/${job.id}/results`,{method:'DELETE'});await this.refreshAll();
+        },
+        async loadImages(){if(this.dataset)this.images=await this.api(`/api/datasets/${this.dataset.id}/images?status=${this.filter}&limit=300`)},
+        async decide(image,status){await this.api(`/api/dataset-images/${image.id}/decision`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({status})});await this.refreshAll()},
+        async deleteImage(image){if(!confirm('이 이미지 파일을 완전히 삭제할까요?'))return;await this.api(`/api/dataset-images/${image.id}`,{method:'DELETE'});await this.refreshAll()},
+        async bulkDelete(payload,message){
+            if(!confirm(message))return;
+            try{const result=await this.api(`/api/datasets/${this.dataset.id}/images/delete`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});alert(`${result.deleted_records}장 삭제됨`);await this.refreshAll()}catch(e){alert(e.message)}
+        },
+        deleteRejected(){return this.bulkDelete({statuses:['rejected','duplicate']},'거절 및 중복 사진을 파일까지 모두 삭제할까요?')},
+        deleteByQuality(){return this.bulkDelete({quality_below:this.bulk.quality},`품질점수 ${this.bulk.quality} 이하 사진을 모두 삭제할까요?`)},
+        deleteBySimilarity(){return this.bulkDelete({similarity_below:this.bulk.similarity},`동일인 점수 ${this.bulk.similarity} 이하 사진을 모두 삭제할까요?`)},
+        repairIssue(issue){
+            const count=this.issueCount(issue.key);if(!count)return this.showNotice('개선할 사진이 없습니다.');
+            if(!confirm(`${issue.label} 사진 ${count}장을 ${issue.repairLabel.replace('일괄 ','')}하고 원본을 백업할까요? 처리 후 얼굴 분석이 자동 실행됩니다.`))return;
+            return this.createJob('repair',{mode:issue.repairMode,analyze_params:{...this.forms.analyze}});
+        },
+        repairImage(image,mode){
+            const label=mode==='small_face'?'얼굴 크롭':'선명화';
+            if(!confirm(`이 사진을 ${label}하고 원본을 백업할까요? 처리 후 얼굴 분석이 자동 실행됩니다.`))return;
+            return this.createJob('repair',{mode,image_ids:[image.id],analyze_params:{...this.forms.analyze}});
+        },
+        repairModes(image){
+            if(image.is_repaired)return [];
+            const modes=[];const reason=image.reason||'';
+            if(reason.includes('얼굴이 작음'))modes.push({mode:'small_face',label:'얼굴 크롭'});
+            if(reason.includes('흐림 후보'))modes.push({mode:'blurry',label:'선명화'});
+            return modes;
+        },
+        repairLabel(image){return {small_face:'개선됨 · 얼굴 크롭/선명화',blurry:'개선됨 · 선명화','small_face+blurry':'개선됨 · 얼굴 크롭/선명화'}[image.repair_kind]||'개선됨'},
+        currentImageUrl(image){return `${image.thumbnail_url}?v=${image.repaired_at||0}`},
+        async restoreImage(image){
+            if(!confirm('개선본을 버리고 백업된 원본으로 복원할까요? 복원 후 얼굴 분석이 자동 실행됩니다.'))return;
+            this.restoring=image.id;
+            try{
+                await this.api(`/api/dataset-images/${image.id}/restore`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({analyze_params:{...this.forms.analyze}})});
+                this.compareImage=null;await this.refreshAll();this.showNotice('원본으로 복원했습니다. 재분석 작업이 등록되었습니다.',4000);
+            }catch(e){alert(e.message)}finally{this.restoring=null}
+        },
+        deleteByIssue(issue){return this.bulkDelete({issues:[issue.key]},`${issue.label} 사진 ${this.issueCount(issue.key)}장을 파일까지 모두 삭제할까요?`)},
+        deleteCurrentFilter(){const payload=this.filter==='all'?{delete_all:true}:this.filter==='repaired'?{repaired_only:true}:{statuses:[this.filter]};return this.bulkDelete(payload,`현재 ${this.statusLabel(this.filter)} 사진을 파일까지 전체 삭제할까요?`)},
+        totalCount(item){return Object.values(item.counts||{}).reduce((a,b)=>a+b,0)},
+        statusCount(status){if(status==='all')return this.totalCount(this.dataset);if(status==='repaired')return this.dataset?.repaired_count||0;return this.dataset?.counts?.[status]||0},
+        statusLabel(status){return status==='repaired'?'개선됨':status},
+        issueCount(issue){return this.dataset?.issue_counts?.[issue]||0},
+        currentFolderPath(){return ['all','repaired'].includes(this.filter)?(this.dataset?.folder_path||''):(this.dataset?.status_folders?.[this.filter]||'')},
+        async copyFolderPath(){
+            const value=this.currentFolderPath();if(!value)return;
+            try{await navigator.clipboard.writeText(value)}catch(e){const area=document.createElement('textarea');area.value=value;document.body.appendChild(area);area.select();document.execCommand('copy');area.remove()}
+            this.showNotice(`경로 복사됨: ${value}`,3500);
+        },
+        isSubmitting(kind){return Boolean(this.submitting[kind])},
+        showNotice(message,duration=2500){this.actionNotice=message;clearTimeout(this.noticeTimer);this.noticeTimer=setTimeout(()=>{this.actionNotice=''},duration)},
+        fmtSimilarity(value){return value===null||value===undefined?'-':Number(value).toFixed(2)},
+        jobMessage(job){
+            const detail=job.error || job.message || '';
+            if(detail.includes('Permission denied') && detail.includes('Cookies'))return 'Chrome 쿠키 DB가 잠겨 있습니다. 위의 로컬 Chrome 동기화 확장을 사용한 뒤 다시 시도하세요.';
+            if(detail.includes('NotFoundError') && job.kind==='collect_instagram')return '계정을 찾지 못했거나 비로그인 접근이 차단됐습니다. 계정명을 확인하고 Chrome 쿠키 동기화 후 다시 시도하세요.';
+            return detail;
+        },
+        jobLabel(kind){return {collect_search:'웹 이미지 검색',collect_bing:'Bing 수집',collect_instagram:'Instagram 수집',import_folder:'폴더 가져오기',upload:'브라우저 업로드',analyze:'얼굴 분석',repair:'사진 개선',export:'내보내기'}[kind]||kind}
+    },
+    async mounted(){await this.loadDatasets();if(this.datasets.length)await this.selectDataset(this.datasets[0].id);this.timer=setInterval(async()=>{if(this.dataset){await this.loadJobs();if(this.jobs.some(j=>['queued','running'].includes(j.status)))await this.refreshAll()}},2000)},
+    beforeUnmount(){clearInterval(this.timer);clearTimeout(this.noticeTimer)}
+}).mount('#app');
+</script>
+</body></html>

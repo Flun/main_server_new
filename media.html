@@ -1,0 +1,898 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Media Studio</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        zinc: { 850: '#202022', 950: '#09090b' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [v-cloak] { display: none; }
+        body { background: #09090b; color: #e4e4e7; }
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+        button, input, select { transition: all 0.15s ease; }
+        .input-base {
+            background-color: #18181b;
+            border: 1px solid #27272a;
+            border-radius: 0.375rem;
+            color: #f4f4f5;
+            padding: 0.5rem 0.75rem;
+            font-size: 0.875rem;
+            outline: none;
+        }
+        .input-base:focus { border-color: #22c55e; box-shadow: 0 0 0 1px #22c55e; }
+        .tool-panel { background: #18181b; border: 1px solid #27272a; border-radius: 0.5rem; }
+        .segmented button[aria-pressed="true"] { background: #f4f4f5; color: #09090b; }
+        .range-thumb { accent-color: #22c55e; }
+    </style>
+</head>
+<body class="min-h-screen antialiased selection:bg-emerald-500/30">
+    <div id="app" class="min-h-screen" v-cloak>
+        <header class="border-b border-zinc-800 bg-zinc-950/90 px-4 py-4 sm:px-6">
+            <div class="mx-auto flex max-w-[1500px] flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div class="flex items-center gap-4">
+                    <a href="/" class="flex h-10 w-10 items-center justify-center rounded-md border border-zinc-800 bg-zinc-900 text-zinc-300 hover:border-zinc-600 hover:text-white" title="Console">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </a>
+                    <div>
+                        <h1 class="text-xl font-semibold tracking-tight text-zinc-100 sm:text-2xl">Media Studio</h1>
+                        <div class="mt-1 flex items-center gap-2 text-xs text-zinc-500">
+                            <span class="h-2 w-2 rounded-full" :class="ffmpeg.ffmpeg ? 'bg-emerald-500' : 'bg-rose-500'"></span>
+                            <span>{{ ffmpeg.version || 'FFmpeg 확인 중' }}</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="flex flex-wrap items-center gap-2">
+                    <button @click="resetAll" class="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-sm font-medium text-zinc-300 hover:bg-zinc-800">Reset</button>
+                    <button @click="processMedia(false)" :disabled="processing || files.length === 0 || !ffmpeg.ffmpeg || (isAiOperation && !mediaAi.available)" class="inline-flex items-center gap-2 rounded-md bg-emerald-500 px-4 py-2 text-sm font-semibold text-zinc-950 hover:bg-emerald-400 disabled:cursor-not-allowed disabled:opacity-50">
+                        <svg v-if="processing" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                        <svg v-else class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1M12 4v12m0 0l-4-4m4 4l4-4"></path></svg>
+                        Export
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <main class="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 lg:grid-cols-[380px_minmax(0,1fr)_360px] sm:px-6">
+            <aside class="space-y-5">
+                <section class="tool-panel overflow-hidden">
+                    <div class="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Sources</h2>
+                        <label class="cursor-pointer rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800">
+                            Add
+                            <input type="file" multiple accept="video/*,audio/*,.mkv,.webm,.flac,.opus" class="hidden" @change="addFiles">
+                        </label>
+                    </div>
+                    <form @submit.prevent="downloadMediaUrl()" class="border-b border-zinc-800 p-3">
+                        <input v-model.trim="mediaDownload.url" type="url" inputmode="url" autocomplete="off" placeholder="YouTube, X, Reddit, Instagram URL" aria-label="미디어 URL" class="input-base w-full" :disabled="mediaDownload.processing">
+                        <div v-if="mediaUrlInfo.collection" class="mt-2 rounded-md border border-sky-500/20 bg-sky-500/5 p-2">
+                            <div class="mb-2 flex items-center justify-between gap-2 text-[11px]">
+                                <span class="font-medium text-sky-300">{{ mediaUrlInfo.kind === 'youtube_shorts' ? 'YouTube 쇼츠' : mediaUrlInfo.platform === 'youtube' ? 'YouTube 채널' : 'Instagram 계정' }} 기간 다운로드</span>
+                                <span class="text-zinc-500">버튼을 누르면 바로 시작합니다</span>
+                            </div>
+                            <div class="grid grid-cols-5 gap-1">
+                                <button v-for="period in downloadPeriods" :key="period.value" type="button" @click="downloadMediaUrl(period.value)" :disabled="mediaDownload.processing" class="rounded border border-zinc-700 bg-zinc-900 px-1 py-1.5 text-[11px] font-medium text-zinc-300 hover:border-sky-500 hover:text-sky-300 disabled:opacity-50">
+                                    {{ period.label }}
+                                </button>
+                            </div>
+                            <div v-if="mediaDownload.jobId" class="mt-2 rounded bg-zinc-950/80 p-2 text-[11px]">
+                                <div class="flex items-center justify-between gap-2">
+                                    <span class="font-medium" :class="mediaDownload.progress.status === 'failed' ? 'text-rose-400' : mediaDownload.progress.status === 'completed' ? 'text-emerald-400' : 'text-sky-300'">{{ downloadStageLabel }}</span>
+                                    <span class="text-zinc-400">
+                                        <template v-if="mediaDownload.progress.itemTotal">{{ mediaDownload.progress.itemIndex || 0 }} / {{ mediaDownload.progress.itemTotal }}</template>
+                                        <template v-else-if="mediaDownload.progress.itemIndex">{{ mediaDownload.progress.itemIndex }}개 진행</template>
+                                    </span>
+                                </div>
+                                <div class="mt-1 h-1.5 overflow-hidden rounded-full bg-zinc-800">
+                                    <div v-if="downloadProgressPercent !== null" class="h-full rounded-full bg-sky-500 transition-all" :style="{width: downloadProgressPercent + '%'}"></div>
+                                    <div v-else-if="mediaDownload.processing" class="h-full w-1/3 animate-pulse rounded-full bg-sky-500/70"></div>
+                                </div>
+                                <div v-if="mediaDownload.progress.currentFile" class="mt-1 truncate text-zinc-300" :title="mediaDownload.progress.currentFile">{{ mediaDownload.progress.currentFile }}</div>
+                                <div class="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-zinc-500">
+                                    <span v-if="mediaDownload.progress.speed">속도 {{ formatBytes(mediaDownload.progress.speed) }}/s</span>
+                                    <span v-if="mediaDownload.progress.eta !== null && mediaDownload.progress.eta !== undefined">남은 시간 {{ formatDuration(mediaDownload.progress.eta) }}</span>
+                                    <span v-if="mediaDownload.progress.downloadedBytes">{{ formatBytes(mediaDownload.progress.downloadedBytes) }}<template v-if="mediaDownload.progress.totalBytes"> / {{ formatBytes(mediaDownload.progress.totalBytes) }}</template> 다운로드</span>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="mt-2 grid grid-cols-3 gap-2">
+                            <label class="text-[10px] text-zinc-500">해상도
+                                <select v-model="mediaDownload.resolution" class="input-base mt-1 w-full px-2 text-xs">
+                                    <option value="best">최고</option><option value="2160">2160p</option><option value="1440">1440p</option><option value="1080">1080p</option><option value="720">720p</option><option value="480">480p</option>
+                                </select>
+                            </label>
+                            <label class="text-[10px] text-zinc-500">비디오 코덱
+                                <select v-model="mediaDownload.videoCodec" class="input-base mt-1 w-full px-2 text-xs">
+                                    <option value="efficient">효율 우선</option><option value="av1">AV1 우선</option><option value="h265">H.265 우선</option><option value="vp9">VP9 우선</option><option value="h264">H.264 우선</option>
+                                </select>
+                            </label>
+                            <label class="text-[10px] text-zinc-500">컨테이너
+                                <select v-model="mediaDownload.container" class="input-base mt-1 w-full px-2 text-xs">
+                                    <option value="mp4">MP4</option><option value="mkv">MKV</option><option value="webm">WebM</option>
+                                </select>
+                            </label>
+                        </div>
+                        <div class="mt-2 flex gap-2">
+                            <button v-if="!mediaUrlInfo.collection" type="submit" :disabled="mediaDownload.processing || !mediaDownload.url" class="inline-flex flex-1 items-center justify-center gap-2 rounded-md bg-sky-600 px-3 py-2 text-xs font-semibold text-white hover:bg-sky-500 disabled:cursor-not-allowed disabled:opacity-50">
+                                <svg v-if="mediaDownload.processing" class="h-4 w-4 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"></path></svg>
+                                <span>{{ mediaDownload.processing ? '다운로드 중' : '다운로드 + 소스 추가' }}</span>
+                            </button>
+                            <button type="button" @click="openDownloadFolder" class="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-2 text-xs font-medium text-zinc-300 hover:bg-zinc-800" title="다운로드 폴더 열기">폴더 열기</button>
+                        </div>
+                        <p class="mt-2 text-[11px] leading-4 text-zinc-500">개별 URL은 해당 게시물만, 계정 URL은 선택 기간의 미디어를 받습니다. Instagram 게시물의 이미지와 영상은 함께 저장됩니다.</p>
+                        <p v-if="mediaDownload.folder" class="mt-1 truncate text-[10px] text-zinc-600" :title="mediaDownload.folder">저장: {{ mediaDownload.folder }}</p>
+                        <div v-if="mediaDownload.files.length" class="mt-2 max-h-36 space-y-1 overflow-y-auto rounded bg-zinc-950 p-2">
+                            <div v-for="item in mediaDownload.files" :key="item.url" class="flex items-center gap-2 text-[11px] text-zinc-400">
+                                <a :href="item.url" :download="item.name" class="flex min-w-0 flex-1 items-center justify-between gap-2 hover:text-sky-300" :title="item.path || item.name">
+                                    <span class="truncate">{{ item.kind === 'image' ? '이미지' : item.kind === 'video' ? '영상' : '오디오' }} · {{ item.name }}</span><span class="shrink-0">{{ formatBytes(item.size) }}</span>
+                                </a>
+                                <button type="button" @click="copyMediaPath(item)" :disabled="!item.path" class="shrink-0 rounded border border-zinc-700 bg-zinc-900 px-2 py-1 font-medium text-zinc-300 hover:border-sky-500 hover:text-sky-300 disabled:cursor-not-allowed disabled:opacity-40" :title="item.path || '저장 경로를 확인할 수 없습니다.'">
+                                    {{ copiedMediaPath === item.path ? '복사됨' : '경로 복사' }}
+                                </button>
+                            </div>
+                        </div>
+                    </form>
+                    <div v-if="files.length === 0" class="flex min-h-48 flex-col items-center justify-center border-2 border-dashed border-zinc-800 m-4 rounded-md text-zinc-500">
+                        <svg class="mb-3 h-10 w-10 text-zinc-700" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M7 16a4 4 0 01.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M12 12v9m0-9l-3 3m3-3l3 3"></path></svg>
+                        <label class="cursor-pointer text-sm font-medium text-zinc-300 hover:text-white">
+                            파일 선택
+                            <input type="file" multiple accept="video/*,audio/*,.mkv,.webm,.flac,.opus" class="hidden" @change="addFiles">
+                        </label>
+                    </div>
+                    <div v-else class="max-h-[520px] overflow-y-auto p-2">
+                        <button v-for="(item, idx) in files" :key="item.id" @click="selectedIndex = idx" class="mb-2 grid w-full grid-cols-[48px_minmax(0,1fr)_28px] items-center gap-3 rounded-md border p-2 text-left" :class="selectedIndex === idx ? 'border-emerald-500/60 bg-emerald-500/10' : 'border-zinc-800 bg-zinc-900 hover:border-zinc-700'">
+                            <div class="flex h-12 w-12 items-center justify-center rounded bg-zinc-950 text-zinc-500">
+                                <svg v-if="item.kind === 'video'" class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
+                                <svg v-else class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19V6l12-2v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"></path></svg>
+                            </div>
+                            <div class="min-w-0">
+                                <div class="truncate text-sm font-medium text-zinc-100">{{ item.file.name }}</div>
+                                <div class="mt-1 text-xs text-zinc-500">{{ formatBytes(item.file.size) }} · {{ item.kind }}</div>
+                            </div>
+                            <span @click.stop="removeFile(idx)" class="flex h-7 w-7 items-center justify-center rounded text-zinc-500 hover:bg-rose-500/10 hover:text-rose-400" title="Remove">
+                                <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </span>
+                        </button>
+                    </div>
+                </section>
+            </aside>
+
+            <section class="space-y-5">
+                <div class="tool-panel overflow-hidden">
+                    <div class="aspect-video bg-black">
+                        <video v-if="activePreviewUrl && output.kind === 'video'" class="h-full w-full" :src="activePreviewUrl" controls></video>
+                        <div v-else-if="activePreviewUrl && output.kind === 'audio'" class="flex h-full w-full flex-col items-center justify-center bg-black text-zinc-500">
+                            <div class="mb-5 flex h-24 w-24 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950">
+                                <svg class="h-11 w-11 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 19V6l12-2v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"></path></svg>
+                            </div>
+                            <audio class="w-4/5 max-w-xl" :src="activePreviewUrl" controls></audio>
+                        </div>
+                        <video v-else-if="selectedFile && selectedFile.kind === 'video'" class="h-full w-full" :src="selectedFile.url" controls></video>
+                        <div v-else class="flex h-full w-full flex-col items-center justify-center bg-black text-zinc-500">
+                            <div class="mb-5 flex h-24 w-24 items-center justify-center rounded-full border border-zinc-800 bg-zinc-950">
+                                <svg class="h-11 w-11 text-zinc-600" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M9 19V6l12-2v13M9 19c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2zm12-2c0 1.105-1.343 2-3 2s-3-.895-3-2 1.343-2 3-2 3 .895 3 2z"></path></svg>
+                            </div>
+                            <audio v-if="selectedFile" class="w-4/5 max-w-xl" :src="selectedFile.url" controls></audio>
+                            <span v-else class="text-sm">No source selected</span>
+                        </div>
+                    </div>
+                    <div class="border-t border-zinc-800 p-4 space-y-3">
+                        <div class="flex flex-wrap items-center justify-between gap-3">
+                            <label class="flex items-center gap-2 text-sm text-zinc-300">
+                                <input type="checkbox" v-model="autoPreview" class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500">
+                                Auto preview
+                            </label>
+                            <div class="flex items-center gap-2">
+                                <span v-if="previewing" class="text-xs text-emerald-300">Rendering preview...</span>
+                                <button @click="renderPreview" :disabled="previewing || files.length === 0 || !ffmpeg.ffmpeg" class="rounded-md border border-zinc-700 bg-zinc-900 px-3 py-1.5 text-xs font-medium text-zinc-300 hover:bg-zinc-800 disabled:opacity-50">Preview now</button>
+                            </div>
+                        </div>
+                        <div class="segmented grid grid-cols-2 gap-1 rounded-md bg-zinc-950 p-1 sm:grid-cols-3">
+                            <button v-for="mode in operationModes" :key="mode.value" type="button" :aria-pressed="operation === mode.value" @click="operation = mode.value" class="rounded px-3 py-2 text-sm font-semibold text-zinc-400 hover:text-zinc-100">{{ mode.label }}</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="tool-panel">
+                    <div class="flex items-center justify-between border-b border-zinc-800 px-4 py-3">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Timeline</h2>
+                        <span class="text-xs text-zinc-600">{{ clips.length }} clips</span>
+                    </div>
+                    <div class="overflow-hidden p-4">
+                        <div class="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-zinc-500">
+                            <span>Track Timeline · drag body to move, drag edges to trim</span>
+                            <span>{{ timelineDuration }}s</span>
+                        </div>
+                        <div ref="timelineStage" data-testid="track-timeline" class="relative mb-5 w-full rounded-md border border-emerald-500/25 bg-[#0b1110]">
+                            <div class="sticky left-0 z-20 flex h-8 items-center border-b border-emerald-500/15 bg-[#0b1110]/95 px-3">
+                                <div v-for="tick in timelineTicks" :key="tick" class="absolute top-0 h-full border-l border-zinc-800/80 text-[10px] text-zinc-600" :style="{ left: timelinePercent(tick) + '%' }">
+                                    <span class="ml-1">{{ tick }}s</span>
+                                </div>
+                            </div>
+                            <div class="relative" :style="{ height: timelineStageHeight + 'px' }">
+                                <div v-for="row in timelineRows" :key="'row-' + row" class="absolute left-0 right-0 h-px bg-zinc-900" :style="{ top: (row * 46 + 46) + 'px' }"></div>
+                                <div v-for="item in timelineItems" :key="item.clip.id + '-block'" class="absolute h-8 select-none rounded border shadow-sm" :class="item.clip.enabled ? 'border-emerald-400/60 bg-emerald-500/20 text-emerald-100' : 'border-zinc-700 bg-zinc-800/70 text-zinc-500'" :style="clipBlockStyle(item)" @pointerdown="startTimelineDrag($event, item.clip, 'move')">
+                                    <button class="absolute left-0 top-0 h-full w-3 cursor-ew-resize rounded-l bg-emerald-300/30 hover:bg-emerald-300/50" @pointerdown.stop="startTimelineDrag($event, item.clip, 'trim-left')" title="Trim start"></button>
+                                    <div class="flex h-full items-center gap-2 overflow-hidden px-4 text-xs font-medium">
+                                        <span class="h-2 w-2 shrink-0 rounded-full" :class="files[item.clip.index]?.kind === 'video' ? 'bg-sky-400' : 'bg-amber-400'"></span>
+                                        <span class="truncate">{{ files[item.clip.index]?.file.name || 'clip' }}</span>
+                                    </div>
+                                    <button class="absolute right-0 top-0 h-full w-3 cursor-ew-resize rounded-r bg-emerald-300/30 hover:bg-emerald-300/50" @pointerdown.stop="startTimelineDrag($event, item.clip, 'trim-right')" title="Trim end"></button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="flex min-h-24 flex-wrap items-stretch gap-3">
+                            <div v-for="(clip, idx) in clips" :key="clip.id" class="w-56 rounded-md border border-zinc-800 bg-zinc-900 p-3">
+                                <div class="mb-3 flex items-center justify-between gap-2">
+                                    <label class="flex min-w-0 items-center gap-2">
+                                        <input type="checkbox" v-model="clip.enabled" class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500">
+                                        <span class="truncate text-xs font-medium text-zinc-300">{{ files[clip.index]?.file.name || 'clip' }}</span>
+                                    </label>
+                                    <button @click="selectedIndex = clip.index" class="text-zinc-500 hover:text-emerald-400" title="Preview">
+                                        <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.868v4.264a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12A9 9 0 113 12a9 9 0 0118 0z"></path></svg>
+                                    </button>
+                                </div>
+                                <div class="grid grid-cols-2 gap-2">
+                                    <label class="text-[11px] text-zinc-500">Start<input v-model.number="clip.start" type="number" min="0" step="0.1" class="input-base mt-1 w-full"></label>
+                                    <label class="text-[11px] text-zinc-500">End<input v-model.number="clip.end" type="number" min="0" step="0.1" class="input-base mt-1 w-full" placeholder="auto"></label>
+                                    <label class="text-[11px] text-zinc-500">Delay<input v-model.number="clip.delay" type="number" min="0" step="0.1" class="input-base mt-1 w-full"></label>
+                                    <label class="text-[11px] text-zinc-500">Volume<input v-model.number="clip.volume" type="number" min="0" step="0.05" class="input-base mt-1 w-full"></label>
+                                </div>
+                                <div class="mt-3 h-2 rounded-full bg-zinc-800">
+                                    <div class="h-2 rounded-full bg-emerald-500/70" :style="{ width: clip.enabled ? timelineWidth(clip) : '0%' }"></div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+            <aside class="space-y-5">
+                <section class="tool-panel p-4">
+                    <h2 class="mb-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Output</h2>
+                    <div class="space-y-4">
+                        <label class="block text-xs font-medium text-zinc-500">형태
+                            <select v-model="output.kind" class="input-base mt-1 w-full">
+                                <option value="video">Video</option>
+                                <option value="audio">Audio</option>
+                            </select>
+                        </label>
+                        <label class="block text-xs font-medium text-zinc-500">포맷
+                            <select v-model="output.format" class="input-base mt-1 w-full">
+                                <option v-for="fmt in availableFormats" :key="fmt" :value="fmt">{{ fmt.toUpperCase() }}</option>
+                            </select>
+                        </label>
+                        <div class="grid grid-cols-2 gap-3">
+                            <label class="block text-xs font-medium text-zinc-500">Video Codec
+                                <select v-model="output.videoCodec" :disabled="output.kind === 'audio'" class="input-base mt-1 w-full disabled:opacity-40">
+                                    <option value="h264">H.264</option>
+                                    <option value="hevc">HEVC</option>
+                                    <option value="vp9">VP9</option>
+                                    <option value="av1">AV1</option>
+                                    <option value="copy">Copy</option>
+                                </select>
+                            </label>
+                            <label class="block text-xs font-medium text-zinc-500">Audio Codec
+                                <select v-model="output.audioCodec" class="input-base mt-1 w-full">
+                                    <option v-for="codec in availableAudioCodecs" :key="codec.value" :value="codec.value">{{ codec.label }}</option>
+                                </select>
+                            </label>
+                        </div>
+                        <label class="block text-xs font-medium text-zinc-500">압축
+                            <select v-model="output.compression" :disabled="output.kind === 'audio'" class="input-base mt-1 w-full disabled:opacity-40">
+                                <option value="high">High Quality</option>
+                                <option value="medium">Balanced</option>
+                                <option value="low">Small File</option>
+                                <option value="lossless">Lossless</option>
+                            </select>
+                        </label>
+                        <label class="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-900 px-3 py-2 text-sm text-zinc-300">
+                            <span>검정 화면 영상</span>
+                            <input type="checkbox" v-model="output.blackVideo" :disabled="output.kind !== 'video'" class="h-4 w-4 rounded border-zinc-700 bg-zinc-900 text-emerald-500 disabled:opacity-40">
+                        </label>
+                    </div>
+                </section>
+
+                <section class="tool-panel p-4">
+                    <h2 class="mb-4 text-xs font-semibold uppercase tracking-wider text-zinc-500">Split Range</h2>
+                    <div class="grid grid-cols-2 gap-3">
+                        <label class="text-xs font-medium text-zinc-500">Start<input v-model.number="split.start" type="number" min="0" step="0.1" class="input-base mt-1 w-full"></label>
+                        <label class="text-xs font-medium text-zinc-500">End<input v-model.number="split.end" type="number" min="0" step="0.1" class="input-base mt-1 w-full" placeholder="auto"></label>
+                    </div>
+                </section>
+
+                <section v-if="isAiOperation" class="tool-panel p-4">
+                    <div class="flex items-center justify-between gap-3">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">AI Voice Isolation</h2>
+                        <span class="rounded-full px-2 py-1 text-[10px] font-semibold" :class="mediaAi.available ? 'bg-emerald-500/10 text-emerald-300' : 'bg-rose-500/10 text-rose-300'">{{ mediaAi.available ? 'GPU 준비됨' : '설치 필요' }}</span>
+                    </div>
+                    <p class="mt-3 text-xs leading-5 text-zinc-400" v-if="operation === 'isolate_vocals'">노래에서 반주를 줄이고 보컬 트랙을 추출합니다.</p>
+                    <p class="mt-3 text-xs leading-5 text-zinc-400" v-else>배경음에서 대화·내레이션을 분리한 뒤 잡음 억제와 음량 보정을 적용합니다.</p>
+                    <p class="mt-2 text-[11px] text-zinc-500">{{ mediaAi.model_cached ? 'AI 모델 캐시됨' : '첫 실행 시 AI 모델을 한 번 다운로드합니다.' }}</p>
+                    <p v-if="!mediaAi.available" class="mt-2 font-mono text-[11px] text-rose-300">setup_media_ai.bat 실행 후 서버 재시작</p>
+                </section>
+
+                <section class="tool-panel overflow-hidden">
+                    <div class="border-b border-zinc-800 px-4 py-3">
+                        <h2 class="text-xs font-semibold uppercase tracking-wider text-zinc-500">Job</h2>
+                    </div>
+                    <div class="space-y-3 p-4">
+                        <div class="rounded-md bg-zinc-950 p-3 font-mono text-xs text-zinc-400">
+                            <div>mode={{ operation }}</div>
+                            <div>files={{ files.length }}</div>
+                            <div>output={{ output.kind }}.{{ output.format }}</div>
+                            <div>preview={{ previewUrl ? 'ready' : 'source' }}</div>
+                        </div>
+                        <div v-if="error" class="max-h-44 overflow-y-auto rounded-md border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-200">{{ error }}</div>
+                        <a v-if="downloadUrl" :href="downloadUrl" :download="downloadName" class="flex w-full items-center justify-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm font-semibold text-emerald-300 hover:bg-emerald-500/20">
+                            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414A1 1 0 0119 9.414V19a2 2 0 01-2 2z"></path></svg>
+                            Download
+                        </a>
+                    </div>
+                </section>
+            </aside>
+        </main>
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    ffmpeg: { ffmpeg: null, ffprobe: null, version: '' },
+                    mediaAi: { available: false, gpu: null, model_cached: false, setup: '' },
+                    files: [],
+                    clips: [],
+                    selectedIndex: 0,
+                    operation: 'mux',
+                    operationModes: [
+                        { value: 'mux', label: '합치기' },
+                        { value: 'merge', label: '이어붙이기' },
+                        { value: 'split', label: '나누기' },
+                        { value: 'convert', label: '변환' },
+                        { value: 'isolate_vocals', label: '보컬 추출' },
+                        { value: 'isolate_dialogue', label: '대화 추출' }
+                    ],
+                    output: {
+                        kind: 'video',
+                        format: 'mp4',
+                        videoCodec: 'h264',
+                        audioCodec: 'aac',
+                        compression: 'medium',
+                        blackVideo: false
+                    },
+                    split: { start: 0, end: '' },
+                    processing: false,
+                    previewing: false,
+                    autoPreview: true,
+                    previewTimer: null,
+                    previewUrl: '',
+                    pxPerSecond: 36,
+                    timelineDrag: null,
+                    error: '',
+                    downloadUrl: '',
+                    downloadName: 'media_result.mp4',
+                    copiedMediaPath: '',
+                    copiedMediaPathTimer: null,
+                    downloadPeriods: [
+                        { value: 'today', label: '오늘' },
+                        { value: 'month', label: '한 달' },
+                        { value: 'year', label: '1년' },
+                        { value: 'five_years', label: '5년' },
+                        { value: 'all', label: '전체' }
+                    ],
+                    mediaDownload: {
+                        url: '', resolution: '1080', videoCodec: 'efficient', container: 'mp4',
+                        period: 'all', processing: false, files: [], folder: '', jobId: '',
+                        progress: { status: '', stage: '', itemIndex: 0, itemTotal: null, currentFile: '', speed: null, eta: null, downloadedBytes: null, totalBytes: null }
+                    }
+                };
+            },
+            computed: {
+                mediaUrlInfo() {
+                    try {
+                        const parsed = new URL(this.mediaDownload.url);
+                        const host = parsed.hostname.toLowerCase().replace(/^www\./, '');
+                        const parts = parsed.pathname.split('/').filter(Boolean);
+                        const first = (parts[0] || '').toLowerCase();
+                        if (host === 'youtu.be') return { platform: 'youtube', collection: false, kind: 'youtube_item' };
+                        if (host === 'youtube.com' || host.endsWith('.youtube.com')) {
+                            const individual = ['watch', 'shorts', 'live', 'embed'].includes(first) || parsed.searchParams.has('v');
+                            const collection = !individual && parts.length > 0 && (parts[0].startsWith('@') || ['channel', 'c', 'user'].includes(first));
+                            const kind = collection && parts[parts.length - 1]?.toLowerCase() === 'shorts' ? 'youtube_shorts' : (collection ? 'youtube_collection' : 'youtube_item');
+                            return { platform: 'youtube', collection, kind };
+                        }
+                        if (host === 'instagram.com' || host.endsWith('.instagram.com')) {
+                            const collection = parts.length > 0 && !['p', 'reel', 'tv', 'stories', 'explore', 'direct'].includes(first);
+                            return { platform: 'instagram', collection, kind: collection ? 'instagram_collection' : 'instagram_item' };
+                        }
+                    } catch (_) {}
+                    return { platform: '', collection: false, kind: '' };
+                },
+                downloadProgressPercent() {
+                    const progress = this.mediaDownload.progress;
+                    if (progress.status === 'completed') return 100;
+                    const byteFraction = progress.totalBytes ? Math.min(1, (progress.downloadedBytes || 0) / progress.totalBytes) : 0;
+                    if (progress.itemTotal) {
+                        const completed = Math.max(0, (progress.itemIndex || 1) - 1);
+                        return Math.min(99.5, ((completed + byteFraction) / progress.itemTotal) * 100);
+                    }
+                    if (progress.totalBytes) return Math.min(99.5, byteFraction * 100);
+                    return null;
+                },
+                downloadStageLabel() {
+                    const progress = this.mediaDownload.progress;
+                    if (progress.status === 'completed') return '다운로드 완료';
+                    if (progress.status === 'failed') return '다운로드 실패';
+                    return {queued: '대기 중', resolving: '미디어 정보 확인 중', downloading: '다운로드 중', processing: '파일 처리 중'}[progress.stage] || '다운로드 준비 중';
+                },
+                selectedFile() {
+                    return this.files[this.selectedIndex] || null;
+                },
+                activePreviewUrl() {
+                    return this.previewUrl || '';
+                },
+                isAiOperation() {
+                    return this.operation === 'isolate_vocals' || this.operation === 'isolate_dialogue';
+                },
+                availableFormats() {
+                    return this.output.kind === 'audio'
+                        ? ['mp3', 'wav', 'm4a', 'aac', 'flac', 'ogg', 'opus']
+                        : ['mp4', 'mkv', 'webm', 'mov'];
+                },
+                availableAudioCodecs() {
+                    const codecs = {
+                        mp3: [{ value: 'mp3', label: 'MP3' }],
+                        wav: [{ value: 'pcm_s16le', label: 'PCM 16-bit' }],
+                        m4a: [{ value: 'aac', label: 'AAC' }],
+                        aac: [{ value: 'aac', label: 'AAC' }],
+                        flac: [{ value: 'flac', label: 'FLAC' }],
+                        ogg: [{ value: 'opus', label: 'Opus' }],
+                        opus: [{ value: 'opus', label: 'Opus' }]
+                    };
+                    if (this.output.kind === 'audio') return codecs[this.output.format] || codecs.mp3;
+                    return [
+                        { value: 'aac', label: 'AAC' },
+                        { value: 'mp3', label: 'MP3' },
+                        { value: 'opus', label: 'Opus' },
+                        { value: 'flac', label: 'FLAC' },
+                        { value: 'copy', label: 'Copy' }
+                    ];
+                },
+                timelineItems() {
+                    let cursor = 0;
+                    return this.clips.map((clip, idx) => {
+                        const duration = this.clipDuration(clip);
+                        const item = {
+                            clip,
+                            row: this.operation === 'merge' ? 0 : idx,
+                            start: this.operation === 'merge' ? cursor : Number(clip.delay || 0),
+                            duration
+                        };
+                        if (clip.enabled && this.operation === 'merge') cursor += duration;
+                        return item;
+                    });
+                },
+                timelineRows() {
+                    return this.operation === 'merge' ? [0] : this.clips.map((_, idx) => idx);
+                },
+                timelineStageHeight() {
+                    return Math.max(96, this.timelineRows.length * 46 + 58);
+                },
+                timelineDuration() {
+                    const ends = this.timelineItems.map((item) => item.start + item.duration);
+                    return Math.max(10, Math.ceil(Math.max(0, ...ends)));
+                },
+                timelineTicks() {
+                    const step = this.timelineDuration > 60 ? 10 : 5;
+                    const ticks = [];
+                    for (let tick = 0; tick <= this.timelineDuration; tick += step) ticks.push(tick);
+                    return ticks;
+                }
+            },
+            watch: {
+                'output.kind'() {
+                    if (!this.availableFormats.includes(this.output.format)) {
+                        this.output.format = this.availableFormats[0];
+                    }
+                    this.syncAudioCodec();
+                    this.schedulePreview();
+                },
+                'output.format'() {
+                    this.syncAudioCodec();
+                    this.schedulePreview();
+                },
+                output: {
+                    deep: true,
+                    handler() {
+                        this.schedulePreview();
+                    }
+                },
+                clips: {
+                    deep: true,
+                    handler() {
+                        this.schedulePreview();
+                    }
+                },
+                split: {
+                    deep: true,
+                    handler() {
+                        this.schedulePreview();
+                    }
+                },
+                operation() {
+                    if (this.isAiOperation) {
+                        this.output.kind = 'audio';
+                        if (!this.availableFormats.includes(this.output.format)) this.output.format = 'mp3';
+                    }
+                    this.schedulePreview();
+                }
+            },
+            methods: {
+                syncAudioCodec() {
+                    if (!this.availableAudioCodecs.some((codec) => codec.value === this.output.audioCodec)) {
+                        this.output.audioCodec = this.availableAudioCodecs[0].value;
+                    }
+                },
+                async fetchFfmpegStatus() {
+                    try {
+                        const res = await fetch('/api/media/ffmpeg');
+                        this.ffmpeg = await res.json();
+                        this.schedulePreview();
+                    } catch (e) {
+                        this.error = 'FFmpeg status check failed.';
+                    }
+                },
+                async fetchMediaAiStatus() {
+                    try {
+                        const res = await fetch('/api/media/ai-status');
+                        if (res.ok) this.mediaAi = await res.json();
+                    } catch (e) {
+                        this.mediaAi.available = false;
+                    }
+                },
+                loadMediaMetadata(item) {
+                    return new Promise((resolve) => {
+                        const el = document.createElement(item.kind === 'video' ? 'video' : 'audio');
+                        el.preload = 'metadata';
+                        el.src = item.url;
+                        el.onloadedmetadata = () => {
+                            item.duration = Number.isFinite(el.duration) ? el.duration : 0;
+                            resolve(item.duration);
+                        };
+                        el.onerror = () => resolve(0);
+                    });
+                },
+                addSourceFile(file) {
+                    const item = {
+                        id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+                        file,
+                        url: URL.createObjectURL(file),
+                        kind: file.type.startsWith('audio/') ? 'audio' : 'video',
+                        duration: 0
+                    };
+                    this.files.push(item);
+                    const clip = {
+                        id: item.id,
+                        index: this.files.length - 1,
+                        enabled: true,
+                        start: 0,
+                        end: '',
+                        delay: 0,
+                        volume: 1
+                    };
+                    this.clips.push(clip);
+                    this.selectedIndex = this.files.length - 1;
+                    this.loadMediaMetadata(item).then((duration) => {
+                        if (duration && !clip.end) clip.end = Number(duration.toFixed(2));
+                        this.schedulePreview();
+                    });
+                },
+                addFiles(event) {
+                    const selected = Array.from(event.target.files || []);
+                    selected.forEach((file) => this.addSourceFile(file));
+                    event.target.value = '';
+                    this.schedulePreview();
+                },
+                async downloadMediaUrl(period = null) {
+                    if (this.mediaDownload.processing || !this.mediaDownload.url) return;
+                    this.error = '';
+                    const isCollection = this.mediaUrlInfo.collection;
+                    this.mediaDownload.period = isCollection && typeof period === 'string' ? period : 'all';
+                    this.mediaDownload.jobId = '';
+                    this.mediaDownload.progress = { status: 'queued', stage: 'queued', itemIndex: 0, itemTotal: null, currentFile: '', speed: null, eta: null, downloadedBytes: null, totalBytes: null };
+                    this.mediaDownload.processing = true;
+                    try {
+                        const res = await fetch('/api/media/download-jobs', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                url: this.mediaDownload.url,
+                                resolution: this.mediaDownload.resolution,
+                                video_codec: this.mediaDownload.videoCodec,
+                                container: this.mediaDownload.container,
+                                period: this.mediaDownload.period
+                            })
+                        });
+                        if (!res.ok) {
+                            const body = await res.json().catch(() => null);
+                            throw new Error(body?.detail || `미디어 다운로드 실패 (${res.status})`);
+                        }
+                        const started = await res.json();
+                        this.mediaDownload.jobId = started.job_id;
+                        let result = null;
+                        while (this.mediaDownload.processing) {
+                            await new Promise((resolve) => setTimeout(resolve, 1000));
+                            const progressRes = await fetch(`/api/media/download-jobs/${encodeURIComponent(started.job_id)}`, { cache: 'no-store' });
+                            if (!progressRes.ok) {
+                                const body = await progressRes.json().catch(() => null);
+                                throw new Error(body?.detail || `다운로드 상태 확인 실패 (${progressRes.status})`);
+                            }
+                            const job = await progressRes.json();
+                            this.mediaDownload.progress = {
+                                status: job.status, stage: job.stage, itemIndex: job.item_index || 0,
+                                itemTotal: job.item_total, currentFile: job.current_file || '', speed: job.speed,
+                                eta: job.eta, downloadedBytes: job.downloaded_bytes, totalBytes: job.total_bytes
+                            };
+                            if (job.folder) this.mediaDownload.folder = job.folder;
+                            if (job.status === 'failed') throw new Error(job.error || '미디어 다운로드에 실패했습니다.');
+                            if (job.status === 'completed') {
+                                result = job;
+                                break;
+                            }
+                        }
+                        if (!result) return;
+                        this.mediaDownload.files = result.files || [];
+                        this.mediaDownload.folder = result.folder || '';
+                        if (!isCollection) {
+                            for (const item of this.mediaDownload.files.filter((file) => file.kind === 'video' || file.kind === 'audio')) {
+                                const fileRes = await fetch(item.url);
+                                if (!fileRes.ok) continue;
+                                const blob = await fileRes.blob();
+                                this.addSourceFile(new File([blob], item.name, { type: blob.type || (item.kind === 'audio' ? 'audio/mpeg' : 'video/mp4') }));
+                            }
+                        }
+                        if (!isCollection) this.mediaDownload.url = '';
+                    } catch (e) {
+                        this.mediaDownload.progress.status = 'failed';
+                        this.mediaDownload.progress.stage = 'failed';
+                        this.error = e.message || String(e);
+                    } finally {
+                        this.mediaDownload.processing = false;
+                    }
+                },
+                async openDownloadFolder() {
+                    this.error = '';
+                    try {
+                        const res = await fetch('/api/media/open-download-folder', { method: 'POST' });
+                        if (!res.ok) {
+                            const body = await res.json().catch(() => null);
+                            throw new Error(body?.detail || '다운로드 폴더를 열지 못했습니다.');
+                        }
+                    } catch (e) {
+                        this.error = e.message || String(e);
+                    }
+                },
+                async copyMediaPath(item) {
+                    const value = item?.path;
+                    if (!value) return;
+                    try {
+                        await navigator.clipboard.writeText(value);
+                    } catch (_) {
+                        const area = document.createElement('textarea');
+                        area.value = value;
+                        area.style.position = 'fixed';
+                        area.style.opacity = '0';
+                        document.body.appendChild(area);
+                        area.select();
+                        document.execCommand('copy');
+                        area.remove();
+                    }
+                    this.copiedMediaPath = value;
+                    clearTimeout(this.copiedMediaPathTimer);
+                    this.copiedMediaPathTimer = setTimeout(() => { this.copiedMediaPath = ''; }, 1800);
+                },
+                removeFile(index) {
+                    const item = this.files[index];
+                    if (item) URL.revokeObjectURL(item.url);
+                    this.files.splice(index, 1);
+                    this.clips = this.files.map((file, idx) => {
+                        const existing = this.clips.find((clip) => clip.id === file.id);
+                        return existing ? { ...existing, index: idx } : {
+                            id: file.id, index: idx, enabled: true, start: 0, end: '', delay: 0, volume: 1
+                        };
+                    });
+                    this.selectedIndex = Math.min(this.selectedIndex, Math.max(this.files.length - 1, 0));
+                    this.clearPreview();
+                    this.schedulePreview();
+                },
+                resetAll() {
+                    this.files.forEach((item) => URL.revokeObjectURL(item.url));
+                    this.files = [];
+                    this.clips = [];
+                    this.selectedIndex = 0;
+                    this.error = '';
+                    if (this.downloadUrl) URL.revokeObjectURL(this.downloadUrl);
+                    this.downloadUrl = '';
+                    this.clearPreview();
+                },
+                clearPreview() {
+                    if (this.previewUrl) URL.revokeObjectURL(this.previewUrl);
+                    this.previewUrl = '';
+                },
+                schedulePreview() {
+                    clearTimeout(this.previewTimer);
+                    if (this.timelineDrag) return;
+                    if (this.isAiOperation) return;
+                    if (!this.autoPreview || this.files.length === 0 || !this.ffmpeg.ffmpeg) return;
+                    this.previewTimer = setTimeout(() => this.renderPreview(), 800);
+                },
+                clipDuration(clip) {
+                    const fileDuration = this.files[clip.index]?.duration || 5;
+                    const start = Number(clip.start || 0);
+                    const end = Number(clip.end || fileDuration);
+                    return Math.max(0.2, end - start);
+                },
+                timelinePercent(seconds) {
+                    return this.timelineDuration > 0 ? Math.min(100, Math.max(0, (seconds / this.timelineDuration) * 100)) : 0;
+                },
+                clipBlockStyle(item) {
+                    return {
+                        top: `${item.row * 46 + 44}px`,
+                        left: `${this.timelinePercent(item.start)}%`,
+                        width: `max(28px, ${this.timelinePercent(item.duration)}%)`
+                    };
+                },
+                startTimelineDrag(event, clip, mode) {
+                    if (!clip.enabled) return;
+                    event.preventDefault();
+                    this.selectedIndex = clip.index;
+                    this.timelineDrag = {
+                        clip,
+                        mode,
+                        startX: event.clientX,
+                        originalDelay: Number(clip.delay || 0),
+                        originalStart: Number(clip.start || 0),
+                        originalEnd: Number(clip.end || this.files[clip.index]?.duration || 5)
+                    };
+                    window.addEventListener('pointermove', this.onTimelineDrag);
+                    window.addEventListener('pointerup', this.stopTimelineDrag, { once: true });
+                },
+                onTimelineDrag(event) {
+                    if (!this.timelineDrag) return;
+                    const drag = this.timelineDrag;
+                    const stageWidth = this.$refs.timelineStage?.clientWidth || 1;
+                    const deltaSeconds = ((event.clientX - drag.startX) / stageWidth) * this.timelineDuration;
+                    const snap = (value) => Math.max(0, Math.round(value * 10) / 10);
+
+                    if (drag.mode === 'move' && this.operation !== 'merge') {
+                        drag.clip.delay = snap(drag.originalDelay + deltaSeconds);
+                    } else if (drag.mode === 'trim-left') {
+                        const newStart = snap(drag.originalStart + deltaSeconds);
+                        const maxStart = Math.max(0, drag.originalEnd - 0.2);
+                        const clampedStart = Math.min(newStart, maxStart);
+                        drag.clip.start = clampedStart;
+                        drag.clip.delay = snap(drag.originalDelay + (clampedStart - drag.originalStart));
+                    } else if (drag.mode === 'trim-right') {
+                        const newEnd = snap(drag.originalEnd + deltaSeconds);
+                        drag.clip.end = Math.max(Number(drag.clip.start || 0) + 0.2, newEnd);
+                    }
+                },
+                stopTimelineDrag() {
+                    window.removeEventListener('pointermove', this.onTimelineDrag);
+                    this.timelineDrag = null;
+                    this.schedulePreview();
+                },
+                timelineWidth(clip) {
+                    const start = Number(clip.start || 0);
+                    const end = Number(clip.end || 0);
+                    if (!end || end <= start) return '100%';
+                    return `${Math.max(12, Math.min(100, (end - start) * 10))}%`;
+                },
+                formatBytes(bytes) {
+                    if (!bytes) return '0 B';
+                    const units = ['B', 'KB', 'MB', 'GB'];
+                    const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+                    return `${(bytes / Math.pow(1024, idx)).toFixed(idx ? 1 : 0)} ${units[idx]}`;
+                },
+                formatDuration(seconds) {
+                    const value = Math.max(0, Math.round(Number(seconds) || 0));
+                    const hours = Math.floor(value / 3600);
+                    const minutes = Math.floor((value % 3600) / 60);
+                    const secs = value % 60;
+                    if (hours) return `${hours}시간 ${minutes}분`;
+                    if (minutes) return `${minutes}분 ${secs}초`;
+                    return `${secs}초`;
+                },
+                async renderPreview() {
+                    if (this.previewing) return;
+                    await this.processMedia(true);
+                },
+                async processMedia(isPreview = false) {
+                    this.error = '';
+                    if (isPreview) {
+                        this.previewing = true;
+                    } else {
+                        this.processing = true;
+                        if (this.downloadUrl) URL.revokeObjectURL(this.downloadUrl);
+                        this.downloadUrl = '';
+                    }
+                    try {
+                        const form = new FormData();
+                        this.files.forEach((item) => form.append('files', item.file));
+                        form.append('operation', this.operation);
+                        form.append('output_kind', this.output.kind);
+                        form.append('output_format', this.output.format);
+                        form.append('video_codec', this.output.videoCodec);
+                        form.append('audio_codec', this.output.audioCodec);
+                        form.append('compression', this.output.compression);
+                        form.append('black_video', this.output.blackVideo ? 'true' : 'false');
+                        form.append('preview', isPreview ? 'true' : 'false');
+                        form.append('selected_index', String(this.selectedIndex));
+                        form.append('split_start', String(this.split.start || 0));
+                        form.append('split_end', this.split.end === '' ? '' : String(this.split.end));
+                        form.append('clips_json', JSON.stringify(this.clips.map((clip) => ({
+                            index: clip.index,
+                            enabled: clip.enabled,
+                            start: Number(clip.start || 0),
+                            end: clip.end === '' ? null : Number(clip.end),
+                            delay: Number(clip.delay || 0),
+                            volume: Number(clip.volume || 1)
+                        }))));
+
+                        const res = await fetch('/api/media/process', { method: 'POST', body: form });
+                        if (!res.ok) throw new Error(await res.text());
+                        const blob = await res.blob();
+                        if (isPreview) {
+                            this.clearPreview();
+                            this.previewUrl = URL.createObjectURL(blob);
+                        } else {
+                            this.downloadUrl = URL.createObjectURL(blob);
+                            this.downloadName = `media_result.${this.output.format}`;
+                        }
+                    } catch (e) {
+                        this.error = e.message || String(e);
+                    } finally {
+                        if (isPreview) this.previewing = false;
+                        else this.processing = false;
+                    }
+                }
+            },
+            mounted() {
+                this.fetchFfmpegStatus();
+                this.fetchMediaAiStatus();
+            },
+            beforeUnmount() {
+                this.mediaDownload.processing = false;
+                clearTimeout(this.previewTimer);
+                window.removeEventListener('pointermove', this.onTimelineDrag);
+                this.files.forEach((item) => URL.revokeObjectURL(item.url));
+                this.clearPreview();
+                if (this.downloadUrl) URL.revokeObjectURL(this.downloadUrl);
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

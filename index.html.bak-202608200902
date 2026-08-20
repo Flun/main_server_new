@@ -1,0 +1,1327 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Infrastructure Console</title>
+    
+    <!-- 폰트 적용 (Inter & JetBrains Mono) -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        mono: ['JetBrains Mono', 'monospace'],
+                    },
+                    colors: {
+                        zinc: {
+                            850: '#202022',
+                            950: '#09090b',
+                        }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        [v-cloak] { display: none; }
+        body { background-color: #09090b; color: #e4e4e7; }
+        body.modal-open { overflow: hidden; overscroll-behavior: none; }
+        
+        /* 세련된 스크롤바 */
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #3f3f46; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #52525b; }
+        
+        /* 공통 트랜지션 및 폼 스타일 */
+        button, input, select { transition: all 0.15s ease; }
+        .input-base {
+            background-color: #18181b; border: 1px solid #27272a; border-radius: 0.375rem;
+            color: #f4f4f5; padding: 0.5rem 0.75rem; font-size: 0.875rem; outline: none;
+        }
+        .input-base:focus { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f1; }
+        
+        .log-container { font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; word-wrap: break-word; font-size: 0.8rem; line-height: 1.5; }
+        .modal-scroll-lock { overscroll-behavior: contain; touch-action: pan-y; }
+        
+        /* 모달 애니메이션 */
+        .fade-enter-active, .fade-leave-active { transition: opacity 0.2s ease; }
+        .fade-enter-from, .fade-leave-to { opacity: 0; }
+        .slide-up-enter-active, .slide-up-leave-active { transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        .slide-up-enter-from, .slide-up-leave-to { opacity: 0; transform: translateY(20px); }
+    </style>
+</head>
+<body class="antialiased min-h-screen p-4 sm:p-8 relative selection:bg-indigo-500/30">
+    <div id="app" class="max-w-[1400px] mx-auto space-y-8" v-cloak>
+        
+        <!-- Header -->
+        <header class="flex flex-col sm:flex-row justify-between items-start sm:items-center pb-6 border-b border-zinc-800 gap-4">
+            <div>
+                <h1 class="text-2xl sm:text-3xl font-semibold text-zinc-100 tracking-tight">AI Infrastructure Console</h1>
+                <div class="flex items-center gap-2 mt-1.5 text-sm text-zinc-500 font-medium">
+                    <span class="w-2 h-2 rounded-full bg-emerald-500/80"></span>
+                    <span>System Online</span>
+                    <span v-if="hw.lhm_available" class="ml-2 pl-2 border-l border-zinc-700 text-indigo-400">LHM Synced</span>
+                </div>
+            </div>
+            <div class="flex flex-wrap gap-3 w-full sm:w-auto">
+                <a href="/models" class="px-3 py-2 text-sm font-medium border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 rounded-lg transition shadow-sm">Model Hub</a>
+                <a href="/media" class="px-3 py-2 text-sm font-medium border border-pink-500/30 bg-pink-500/10 hover:bg-pink-500/20 text-pink-300 rounded-lg transition shadow-sm">Media Studio</a>
+                <a href="/dataset" class="px-3 py-2 text-sm font-medium border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition shadow-sm">Dataset</a>
+                <a href="/vast" class="px-3 py-2 text-sm font-medium border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 rounded-lg transition shadow-sm">Vast Remote</a>
+                <button @click="restartManager" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 hover:border-zinc-600 rounded-lg text-zinc-300 shadow-sm">
+                    Restart Manager
+                </button>
+                <button @click="panicKill" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 rounded-lg shadow-sm flex items-center justify-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
+                    Terminate All
+                </button>
+            </div>
+        </header>
+
+        <!-- Hardware Resources (Modern Dashboard Style) -->
+        <section class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 shadow-sm">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xs font-semibold text-zinc-500 tracking-wider uppercase">Hardware Utilization</h2>
+                <button @click="openHwHistoryModal" class="text-xs px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-200 transition flex items-center gap-1.5">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                    History
+                </button>
+            </div>
+            
+            <div class="grid grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
+                <!-- CPU -->
+                <div>
+                    <div class="flex justify-between items-end mb-2">
+                        <span class="text-sm font-medium text-zinc-400">CPU</span>
+                        <span class="text-lg font-semibold text-zinc-100">{{ hw.cpu.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
+                    </div>
+                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.cpu + '%'}"></div></div>
+                </div>
+                <!-- RAM -->
+                <div>
+                    <div class="flex justify-between items-end mb-2">
+                        <span class="text-sm font-medium text-zinc-400">Memory</span>
+                        <span class="text-lg font-semibold text-zinc-100">{{ hw.ram.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
+                    </div>
+                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.ram + '%'}"></div></div>
+                </div>
+                <!-- GPU -->
+                <div>
+                    <div class="flex justify-between items-end mb-2">
+                        <span class="text-sm font-medium text-zinc-400">GPU Core</span>
+                        <span class="text-lg font-semibold text-zinc-100">{{ hw.gpu.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
+                    </div>
+                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-sky-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.gpu + '%'}"></div></div>
+                </div>
+                <!-- VRAM -->
+                <div>
+                    <div class="flex justify-between items-end mb-2">
+                        <span class="text-sm font-medium text-zinc-400">VRAM <span class="text-xs text-zinc-600 ml-1">({{ hw.vram_used }} / {{ hw.vram_total }} GB)</span></span>
+                        <span class="text-lg font-semibold text-zinc-100">{{ hw.vram.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
+                    </div>
+                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-amber-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.vram + '%'}"></div></div>
+                </div>
+            </div>
+
+            <!-- Sensors -->
+            <div class="grid grid-cols-2 md:grid-cols-6 gap-px bg-zinc-800 rounded-lg overflow-hidden border border-zinc-800">
+                <div class="bg-zinc-900 p-3">
+                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">CPU Temp</div>
+                    <div class="text-base font-semibold" :class="getColor(hw.cpu_temp)">{{ hw.cpu_temp !== null ? hw.cpu_temp + '°C' : '--' }}</div>
+                </div>
+                <div class="bg-zinc-900 p-3">
+                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">CPU Power</div>
+                    <div class="text-base font-semibold text-zinc-300">{{ hw.cpu_power !== null ? hw.cpu_power + ' W' : '--' }}</div>
+                </div>
+                <div class="bg-zinc-900 p-3">
+                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">CPU Fan</div>
+                    <div class="text-base font-semibold text-zinc-300">{{ hw.cpu_fan !== null ? hw.cpu_fan + ' RPM' : '--' }}</div>
+                </div>
+                <div class="bg-zinc-900 p-3">
+                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">GPU Temp</div>
+                    <div class="text-base font-semibold" :class="getColor(hw.gpu_temp)">{{ hw.gpu_temp !== null ? hw.gpu_temp + '°C' : '--' }}</div>
+                </div>
+                <div class="bg-zinc-900 p-3">
+                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">GPU Power</div>
+                    <div class="text-base font-semibold text-zinc-300">{{ hw.gpu_power !== null ? hw.gpu_power + ' W' : '--' }}</div>
+                </div>
+                <div class="bg-zinc-900 p-3">
+                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">GPU Hotspot</div>
+                    <div class="text-base font-semibold" :class="getColor(hw.gpu_hotspot)">{{ hw.gpu_hotspot !== null ? hw.gpu_hotspot + '°C' : '--' }}</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Services (Cards) -->
+        <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
+            
+            <!-- Telegram Bot -->
+            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col hover:border-zinc-700 transition">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 class="text-base font-semibold text-zinc-100">Telegram Bot</h3>
+                        <p class="text-xs text-zinc-500 mt-1">Background isolated process</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="flex h-2 w-2 relative">
+                            <span v-if="status.telegram_bot" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2" :class="status.telegram_bot ? 'bg-emerald-500' : 'bg-zinc-600'"></span>
+                        </span>
+                        <button @click="forceKill('bot')" class="text-[10px] bg-zinc-800 hover:bg-rose-900/40 hover:text-rose-400 text-zinc-400 px-2 py-0.5 rounded border border-zinc-700 transition" title="Force Kill">Kill</button>
+                    </div>
+                </div>
+                
+                <div class="mt-auto space-y-2">
+                    <button v-if="!status.telegram_bot" @click="controlServer('bot', 'start')" :disabled="loading.bot" class="w-full py-2.5 rounded-lg font-medium text-sm bg-zinc-100 text-zinc-900 hover:bg-white disabled:opacity-50 transition">Start Service</button>
+                    <button v-else @click="controlServer('bot', 'stop')" :disabled="loading.bot" class="w-full py-2.5 rounded-lg font-medium text-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition">Stop Service</button>
+                    <button @click="openLogModal('bot')" class="w-full py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition">View Terminal Log</button>
+                </div>
+            </div>
+
+            <!-- Local Watcher -->
+            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col hover:border-zinc-700 transition">
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 class="text-base font-semibold text-zinc-100">Local Watcher</h3>
+                        <p class="text-xs text-zinc-500 mt-1">Keyword monitor and alerts</p>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="flex h-2 w-2 relative">
+                            <span v-if="status.watcher" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2" :class="status.watcher ? 'bg-emerald-500' : 'bg-zinc-600'"></span>
+                        </span>
+                        <button @click="forceKill('watcher')" class="text-[10px] bg-zinc-800 hover:bg-rose-900/40 hover:text-rose-400 text-zinc-400 px-2 py-0.5 rounded border border-zinc-700 transition" title="Force Kill">Kill</button>
+                    </div>
+                </div>
+
+                <div class="mt-auto space-y-2">
+                    <button v-if="!status.watcher" @click="controlServer('watcher', 'start')" :disabled="loading.watcher" class="w-full py-2.5 rounded-lg font-medium text-sm bg-zinc-100 text-zinc-900 hover:bg-white disabled:opacity-50 transition">Start Service</button>
+                    <button v-else @click="controlServer('watcher', 'stop')" :disabled="loading.watcher" class="w-full py-2.5 rounded-lg font-medium text-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition">Stop Service</button>
+                    <div class="flex gap-2">
+                        <a href="http://127.0.0.1:8888" target="_blank" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Web UI</a>
+                        <button @click="openLogModal('watcher')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition border border-transparent">Log</button>
+                        <button @click="openFolder('watcher')" class="px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition" title="Open Folder">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ComfyUI -->
+            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col hover:border-zinc-700 transition relative overflow-hidden">
+                <div v-if="status.comfyui" class="absolute top-0 right-0 bg-indigo-500/10 border-b border-l border-indigo-500/20 text-indigo-400 text-[10px] font-semibold px-2 py-1 rounded-bl-lg">VRAM Active</div>
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 class="text-base font-semibold text-zinc-100">ComfyUI</h3>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="flex h-2 w-2 relative">
+                            <span v-if="status.comfyui" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2" :class="status.comfyui ? 'bg-emerald-500' : 'bg-zinc-600'"></span>
+                        </span>
+                        <button @click="forceKill('comfyui')" class="text-[10px] bg-zinc-800 hover:bg-rose-900/40 hover:text-rose-400 text-zinc-400 px-2 py-0.5 rounded border border-zinc-700 transition" title="Force Kill requires confirmation">Kill</button>
+                    </div>
+                </div>
+                
+                <div class="mt-auto space-y-2">
+                    <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                        <div class="mb-2 flex items-center justify-between gap-2">
+                            <span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Launch Options</span>
+                            <span v-if="comfySettingsSaving" class="text-[10px] text-amber-400">Saving</span>
+                        </div>
+                        <div class="grid grid-cols-1 gap-2 text-xs text-zinc-300">
+                            <label v-for="option in comfyOptionDefs" :key="option.key" class="flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 px-2.5 py-2">
+                                <span class="font-mono text-[11px] text-zinc-300">{{ option.label }}</span>
+                                <input type="checkbox" v-model="comfySettings[option.key]" @change="saveComfySettings" class="h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-950">
+                            </label>
+                        </div>
+                    </div>
+
+                    <button v-if="!status.comfyui" @click="controlServer('comfyui', 'start')" :disabled="loading.comfyui" class="w-full py-2.5 rounded-lg font-medium text-sm bg-zinc-100 text-zinc-900 hover:bg-white disabled:opacity-50 transition">Start Service</button>
+                    <button v-else @click="controlServer('comfyui', 'stop')" :disabled="loading.comfyui" class="w-full py-2.5 rounded-lg font-medium text-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition">Stop Service</button>
+                    
+                    <div class="flex gap-2">
+                        <a href="http://127.0.0.1:8188" target="_blank" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Web UI</a>
+                        <button @click="openLogModal('comfyui')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition border border-transparent">Log</button>
+                        <button @click="openTerminal('comfyui')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition border border-transparent">Console</button>
+                        <button @click="openFolder('comfyui')" class="px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition" title="Open Folder">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Llama.cpp -->
+            <div class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 flex flex-col hover:border-zinc-700 transition relative overflow-hidden">
+                <div v-if="status.llamacpp" class="absolute top-0 right-0 bg-indigo-500/10 border-b border-l border-indigo-500/20 text-indigo-400 text-[10px] font-semibold px-2 py-1 rounded-bl-lg">VRAM Active</div>
+                <div class="flex justify-between items-start mb-4">
+                    <div>
+                        <h3 class="text-base font-semibold text-zinc-100">Llama.cpp</h3>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <span class="flex h-2 w-2 relative">
+                            <span v-if="status.llamacpp" class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                            <span class="relative inline-flex rounded-full h-2 w-2" :class="status.llamacpp ? 'bg-emerald-500' : 'bg-zinc-600'"></span>
+                        </span>
+                        <button @click="forceKill('llamacpp')" class="text-[10px] bg-zinc-800 hover:bg-rose-900/40 hover:text-rose-400 text-zinc-400 px-2 py-0.5 rounded border border-zinc-700 transition" title="Force Kill">Kill</button>
+                    </div>
+                </div>
+                
+                <div class="mt-auto space-y-2">
+                    <button v-if="status.llamacpp" @click="controlServer('llamacpp', 'stop')" :disabled="loading.llamacpp" class="w-full py-2.5 rounded-lg font-medium text-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition">Stop Service</button>
+                    <div v-else class="text-xs text-center w-full text-zinc-500 py-2.5 border border-zinc-800 border-dashed rounded-lg bg-zinc-900/50">Configure & Launch below</div>
+                    
+                    <div class="flex gap-2">
+                        <a :href="`http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`" target="_blank" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Endpoint ({{config.port}})</a>
+                        <button @click="openLogModal('llamacpp')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition">Log</button>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Llama.cpp Configurator -->
+        <section class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 sm:p-7 shadow-sm">
+            <div class="flex flex-col lg:flex-row justify-between items-start lg:items-center border-b border-zinc-800 pb-5 mb-6 gap-4">
+                <div>
+                    <h2 class="text-lg font-semibold text-zinc-100">Llama.cpp Configurator</h2>
+                    <p class="text-xs text-zinc-500 mt-1">Construct engine arguments and manage presets</p>
+                </div>
+                <div class="flex flex-col sm:flex-row w-full lg:w-auto gap-3">
+                    <div class="flex gap-2 w-full lg:w-auto">
+                        <select v-model="selectedPreset" @change="loadPreset" class="input-base flex-1 sm:w-48">
+                            <option value="">-- Select Preset --</option>
+                            <option v-for="(p, name) in presets" :key="name" :value="name">{{ name }}</option>
+                        </select>
+                        <button v-if="selectedPreset" @click="deletePreset" class="px-3 border border-zinc-700 bg-zinc-800 hover:bg-rose-900/20 hover:text-rose-400 hover:border-rose-900/50 rounded-lg text-zinc-400 transition" title="Delete Preset">
+                            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+                        </button>
+                    </div>
+                    <div class="flex gap-2 w-full sm:w-auto">
+                        <button v-if="selectedPreset" @click="savePresetOverwrite" class="w-full sm:w-auto px-4 py-2 text-sm font-medium border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300 transition">Save</button>
+                        <button @click="savePresetAs" class="w-full sm:w-auto px-4 py-2 text-sm font-medium border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 rounded-lg transition whitespace-nowrap">Save As...</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                <!-- Left: Options -->
+                <div class="lg:col-span-7 space-y-6">
+                    
+                    <!-- Core Section -->
+                    <div class="space-y-4">
+                        <div class="flex flex-col">
+                            <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Engine Version</label>
+                            <div class="flex flex-col sm:flex-row gap-2">
+                                <select v-model="config.version" class="input-base flex-1 font-mono text-xs">
+                                    <option v-for="v in scanData.versions" :key="v" :value="v">{{ getDirName(v) }}</option>
+                                </select>
+                                <div class="flex gap-2">
+                                    <button @click="openUpdateModal" class="px-4 py-2 text-xs font-medium border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300 transition whitespace-nowrap" :disabled="isFetchingReleases">
+                                        {{ isFetchingReleases ? 'Checking...' : 'Check Update' }}
+                                    </button>
+                                    <button @click="cleanupLlamaVersions" class="px-4 py-2 text-xs font-medium border border-amber-700/50 bg-amber-900/20 hover:bg-amber-900/30 hover:border-amber-600 rounded-lg text-amber-400 transition whitespace-nowrap" title="Remove old versions">
+                                        Cleanup Versions
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 relative">
+                            <div class="absolute -top-6 right-0">
+                                <button @click="openFolder('model')" class="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 font-medium">
+                                    <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg> Open Models
+                                </button>
+                            </div>
+                            <div class="flex flex-col col-span-2">
+                                <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Model Root Folder</label>
+                                <div class="flex flex-col sm:flex-row gap-2">
+                                    <input type="text" v-model="modelRootInput" @keyup.enter="saveModelRoot" class="input-base flex-1 font-mono text-xs" placeholder="/mnt/model">
+                                    <button @click="saveModelRoot" :disabled="modelRootSaving" class="px-4 py-2 text-xs font-medium border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/20 text-indigo-300 rounded-lg transition whitespace-nowrap disabled:opacity-50">
+                                        {{ modelRootSaving ? 'Saving...' : 'Apply & Scan' }}
+                                    </button>
+                                </div>
+                                <p class="text-[11px] text-zinc-500 mt-1.5">GGUF 및 Jinja 파일을 스캔합니다. 저장 시 llama.cpp 설정에 자동 반영됩니다.</p>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Main Model (-m)</label>
+                                <select v-model="config.model" class="input-base text-xs truncate">
+                                    <option value="">None</option>
+                                    <option v-for="m in scanData.models" :key="m" :value="m">{{ getDirName(m) }}</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">VLM Proj (--mmproj)</label>
+                                <select v-model="config.mmproj" class="input-base text-xs truncate">
+                                    <option value="">None</option>
+                                    <option v-for="m in scanData.mmproj" :key="'proj_'+m" :value="m">{{ getDirName(m) }}</option>
+                                </select>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Parameter Grid -->
+                    <div class="bg-zinc-950/50 p-5 rounded-lg border border-zinc-800/80">
+                        <div class="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-5">
+                            
+                            <div class="flex flex-col col-span-2 sm:col-span-1">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Context Size</label>
+                                <select v-model="config.ctx" class="input-base text-xs">
+                                    <option value="4096">4K</option>
+                                    <option value="8192">8K</option>
+                                    <option value="16384">16K</option>
+                                    <option value="32768">32K</option>
+                                    <option value="65536">64K</option>
+                                    <option value="131072">128K</option>
+                                    <option value="262144">256K</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">GPU Offload (-ngl)</label>
+                                <input type="number" v-model="config.ngl" class="input-base text-xs" placeholder="999">
+                            </div>
+                            <div class="flex gap-2">
+                                <div class="flex flex-col flex-1">
+                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Host</label>
+                                    <input type="text" v-model="config.host" class="input-base text-xs" placeholder="0.0.0.0">
+                                </div>
+                                <div class="flex flex-col w-16">
+                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Port</label>
+                                    <input type="number" v-model="config.port" class="input-base text-xs" placeholder="8080">
+                                </div>
+                            </div>
+
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-indigo-400 mb-1.5">Reasoning Budget</label>
+                                <select v-model="config.reasoningBudget" class="input-base text-xs">
+                                    <option value="">Default</option>
+                                    <option value="0">0 (Disable)</option>
+                                    <option value="512">512</option>
+                                    <option value="1024">1024</option>
+                                    <option value="2048">2048</option>
+                                    <option value="4096">4096</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Max Tokens (-n)</label>
+                                <input type="number" v-model="config.nPredict" class="input-base text-xs" placeholder="-1 (Inf)">
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Parallel (-np)</label>
+                                <input type="number" v-model="config.parallel" class="input-base text-xs" placeholder="1">
+                            </div>
+
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Cache K</label>
+                                <select v-model="config.cacheK" class="input-base text-xs">
+                                    <option value="">Default</option>
+                                    <option value="q4_0">q4_0</option>
+                                    <option value="q8_0">q8_0</option>
+                                    <option value="f16">f16</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Cache V</label>
+                                <select v-model="config.cacheV" class="input-base text-xs">
+                                    <option value="">Default</option>
+                                    <option value="q4_0">q4_0</option>
+                                    <option value="q8_0">q8_0</option>
+                                    <option value="f16">f16</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">CPU Threads (-t)</label>
+                                <input type="number" v-model="config.threads" class="input-base text-xs" placeholder="Auto">
+                            </div>
+                        </div>
+
+                        <!-- Checkboxes -->
+                        <div class="flex flex-wrap items-center gap-5 mt-5 pt-4 border-t border-zinc-800">
+                            <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group">
+                                <input type="checkbox" v-model="config.fit" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 transition"> 
+                                <span class="font-mono text-xs">--fit on</span>
+                            </label>
+                            <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group">
+                                <input type="checkbox" v-model="config.flash" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 transition"> 
+                                <span class="font-mono text-xs">--flash-attn on</span>
+                            </label>
+                        </div>
+                    </div>
+
+                    <!-- Behavior Section -->
+                    <div class="bg-zinc-950/50 p-5 rounded-lg border border-zinc-800/80 space-y-4">
+                        <div>
+                            <label class="text-[11px] font-medium text-zinc-400 mb-2 block uppercase tracking-wide">Temperature Presets</label>
+                            <div class="flex flex-col sm:flex-row gap-4 text-xs">
+                                <label class="flex items-center gap-2 cursor-pointer text-zinc-300"><input type="radio" v-model="config.tempMode" value="" class="w-3.5 h-3.5 text-zinc-500 focus:ring-zinc-500/50 focus:ring-offset-zinc-900 bg-zinc-800 border-zinc-700"> None</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-amber-200/80"><input type="radio" v-model="config.tempMode" value="general" class="w-3.5 h-3.5 text-amber-500 focus:ring-amber-500/50 focus:ring-offset-zinc-900 bg-zinc-800 border-zinc-700"> General / Reasoning (1.0)</label>
+                                <label class="flex items-center gap-2 cursor-pointer text-indigo-300"><input type="radio" v-model="config.tempMode" value="coding" class="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 bg-zinc-800 border-zinc-700"> Coding / Strict (0.6)</label>
+                            </div>
+                        </div>
+                        <div class="pt-4 border-t border-zinc-800">
+                            <label class="flex items-center gap-2 cursor-pointer text-xs text-emerald-400/80">
+                                <input type="checkbox" v-model="config.useTemplate" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-emerald-500 focus:ring-emerald-500/50 focus:ring-offset-zinc-900 transition"> 
+                                Enforce Open-CL custom_qwen.jinja template
+                            </label>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Right: Launch Area -->
+                <div class="lg:col-span-5 flex flex-col h-full space-y-4">
+                    <div class="flex-1 bg-[#0c0c0e] rounded-lg border border-zinc-800 p-4 flex flex-col min-h-[250px] shadow-inner relative">
+                        <div class="flex items-center justify-between mb-3">
+                            <span class="text-[10px] font-semibold text-zinc-500 uppercase tracking-widest">Execution Command</span>
+                            <div class="flex gap-1.5">
+                                <span class="w-2.5 h-2.5 rounded-full bg-zinc-800"></span>
+                                <span class="w-2.5 h-2.5 rounded-full bg-zinc-800"></span>
+                                <span class="w-2.5 h-2.5 rounded-full bg-zinc-800"></span>
+                            </div>
+                        </div>
+                        <textarea readonly :value="computedCommand" class="w-full flex-1 bg-transparent text-zinc-400 font-mono text-xs resize-none outline-none leading-relaxed selection:bg-zinc-800"></textarea>
+                    </div>
+                    
+                    <button @click="startLlama" :disabled="loading.llamacpp" 
+                        class="w-full py-4 rounded-xl font-semibold text-base transition-all duration-200"
+                        :class="loading.llamacpp ? 'bg-zinc-800 text-zinc-500 cursor-not-allowed border border-zinc-700' : 'bg-indigo-600 text-white hover:bg-indigo-500 shadow-[0_0_20px_rgba(79,70,229,0.15)] hover:shadow-[0_0_25px_rgba(79,70,229,0.3)]'">
+                        <span v-if="loading.llamacpp" class="flex items-center justify-center gap-2">
+                            <svg class="animate-spin h-4 w-4" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                            Initializing Engine...
+                        </span>
+                        <span v-else>Launch Llama Engine</span>
+                    </button>
+                    <p class="text-center text-[11px] text-zinc-500">Runs detached. Monitor output via Terminal Log.</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Modals -->
+
+        <!-- Terminal Log Modal -->
+        <transition name="fade">
+            <div v-if="logModal.show" class="fixed inset-0 z-50 flex items-stretch justify-center overflow-hidden sm:items-center sm:p-6" @click.self="closeLogModal">
+                <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+                
+                <div class="relative bg-zinc-900 border border-zinc-800 w-full h-screen max-h-screen h-[100dvh] max-h-[100dvh] flex flex-col shadow-2xl overflow-hidden sm:max-w-6xl sm:h-[95vh] sm:max-h-[95vh] sm:rounded-xl">
+                    
+                    <!-- Header -->
+                    <div class="flex flex-col gap-3 bg-zinc-950 px-4 py-3 border-b border-zinc-800 sm:flex-row sm:items-center sm:justify-between sm:px-5">
+                        <div class="flex min-w-0 items-center gap-3">
+                            <span class="w-2.5 h-2.5 rounded-full bg-emerald-500 animate-pulse"></span>
+                            <h3 class="min-w-0 truncate font-medium text-zinc-200 text-sm font-mono tracking-tight">{{ logModal.title }} <span class="text-zinc-500">/ stdout</span></h3>
+                            <button @click="closeLogModal" class="ml-auto inline-flex items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800 px-3 py-1.5 text-xs font-medium text-zinc-200 hover:bg-zinc-700 sm:hidden">
+                                Close
+                                <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                        <div class="flex items-center justify-between gap-3 sm:justify-end sm:gap-4">
+                            <label class="text-xs text-zinc-400 flex items-center gap-2 cursor-pointer hover:text-zinc-200 transition">
+                                <input type="checkbox" v-model="logModal.autoScroll" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-950"> Auto-scroll
+                            </label>
+                            <button @click="clearLog" class="text-[11px] font-medium bg-zinc-800 hover:bg-zinc-700 px-2.5 py-1 rounded-md text-zinc-300 transition border border-zinc-700">Clear</button>
+                            <button @click="closeLogModal" class="hidden text-zinc-500 hover:text-zinc-200 transition sm:block" title="Close">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Mini Hardware Header inside Modal -->
+                    <div class="modal-scroll-lock bg-zinc-900/50 border-b border-zinc-800/80 px-4 py-2 flex items-center gap-6 overflow-x-auto whitespace-nowrap scrollbar-hide sm:px-5">
+                        <div class="flex items-center gap-2 text-[10px] uppercase font-semibold text-zinc-500 tracking-wider">
+                            <span>CPU</span> <span class="text-zinc-200">{{ hw.cpu.toFixed(0) }}%</span> <span :class="getColor(hw.cpu_temp)">{{ hw.cpu_temp || '--' }}°</span> <span class="text-zinc-400">{{ hw.cpu_power !== null ? hw.cpu_power + 'W' : '' }}</span>
+                        </div>
+                        <div class="w-px h-3 bg-zinc-800"></div>
+                        <div class="flex items-center gap-2 text-[10px] uppercase font-semibold text-zinc-500 tracking-wider">
+                            <span>RAM</span> <span class="text-zinc-200">{{ hw.ram.toFixed(0) }}%</span>
+                        </div>
+                        <div class="w-px h-3 bg-zinc-800"></div>
+                        <div class="flex items-center gap-2 text-[10px] uppercase font-semibold text-zinc-500 tracking-wider">
+                            <span>GPU</span> <span class="text-zinc-200">{{ hw.gpu.toFixed(0) }}%</span> <span :class="getColor(hw.gpu_temp)">{{ hw.gpu_temp || '--' }}°</span> <span class="text-zinc-400">{{ hw.gpu_power !== null ? hw.gpu_power + 'W' : '' }}</span>
+                        </div>
+                        <div class="w-px h-3 bg-zinc-800"></div>
+                        <div class="flex items-center gap-2 text-[10px] uppercase font-semibold text-zinc-500 tracking-wider">
+                            <span>VRAM</span> <span class="text-zinc-200">{{ hw.vram.toFixed(0) }}%</span> <span :class="getColor(hw.gpu_hotspot)">Hot {{ hw.gpu_hotspot || '--' }}°</span>
+                        </div>
+                    </div>
+
+                    <!-- Terminal Output -->
+                    <div class="modal-scroll-lock min-h-0 flex-1 bg-[#0c0c0e] p-3 overflow-y-auto sm:p-5" id="log-terminal">
+                        <pre class="log-container text-zinc-300">{{ logModal.content }}</pre>
+                    </div>
+
+                    <div class="border-t border-zinc-800 bg-zinc-950 px-4 py-3 sm:hidden">
+                        <button @click="closeLogModal" class="w-full rounded-lg bg-zinc-100 py-2.5 text-sm font-semibold text-zinc-950 hover:bg-white">Close Log</button>
+                    </div>
+                </div>
+            </div>
+        </transition>
+
+        <!-- Hardware History Modal -->
+        <transition name="fade">
+            <div v-if="hwHistoryModal.show" class="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6" @click.self="closeHwHistoryModal">
+                <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+
+                <div class="relative bg-zinc-900 border border-zinc-800 rounded-xl w-full max-w-6xl h-[90vh] flex flex-col shadow-2xl overflow-hidden">
+
+                    <!-- Header -->
+                    <div class="flex justify-between items-center bg-zinc-950 px-5 py-3 border-b border-zinc-800">
+                        <div class="flex items-center gap-3">
+                            <svg class="w-5 h-5 text-indigo-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                            <h3 class="font-medium text-zinc-200 text-sm">Hardware History</h3>
+                        </div>
+                        <div class="flex items-center gap-3">
+                            <span class="text-xs text-zinc-500">{{ hwHistoryModal.history.length }} records</span>
+                            <button @click="clearHwHistory" class="text-[11px] font-medium bg-zinc-800 hover:bg-rose-900/40 hover:text-rose-400 px-2.5 py-1 rounded-md text-zinc-300 transition border border-zinc-700">Clear</button>
+                            <button @click="closeHwHistoryModal" class="text-zinc-500 hover:text-zinc-200 transition">
+                                <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Hardware History Table -->
+                    <div class="flex-1 overflow-y-auto bg-[#0c0c0e]">
+                        <table class="w-full text-xs">
+                            <thead class="bg-zinc-900 sticky top-0 z-10">
+                                <tr>
+                                    <th class="text-left py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">Time</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">CPU</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">CPU Temp</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">CPU Power</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">CPU Fan</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">RAM</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">GPU</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">GPU Temp</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">GPU Power</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">Hotspot</th>
+                                    <th class="text-right py-2.5 px-4 font-medium text-zinc-500 uppercase tracking-wider">VRAM</th>
+                                </tr>
+                            </thead>
+                            <tbody class="font-mono">
+                                <tr v-for="(record, idx) in hwHistoryModal.history.slice().reverse()" :key="idx" class="border-t border-zinc-800/50 hover:bg-zinc-800/30 transition">
+                                    <td class="py-2 px-4 text-zinc-400 whitespace-nowrap">{{ formatTime(record.timestamp) }}</td>
+                                    <td class="py-2 px-4 text-right" :class="getUsageColor(record.cpu)">{{ record.cpu.toFixed(1) }}%</td>
+                                    <td class="py-2 px-4 text-right" :class="getTempColor(record.cpu_temp)">{{ record.cpu_temp !== null ? record.cpu_temp.toFixed(1) + '°' : '--' }}</td>
+                                    <td class="py-2 px-4 text-right text-zinc-300">{{ record.cpu_power !== null ? record.cpu_power.toFixed(1) + 'W' : '--' }}</td>
+                                    <td class="py-2 px-4 text-right text-zinc-300">{{ record.cpu_fan !== null ? record.cpu_fan.toFixed(0) + ' RPM' : '--' }}</td>
+                                    <td class="py-2 px-4 text-right" :class="getUsageColor(record.ram)">{{ record.ram.toFixed(1) }}%</td>
+                                    <td class="py-2 px-4 text-right" :class="getUsageColor(record.gpu)">{{ record.gpu.toFixed(1) }}%</td>
+                                    <td class="py-2 px-4 text-right" :class="getTempColor(record.gpu_temp)">{{ record.gpu_temp !== null ? record.gpu_temp.toFixed(1) + '°' : '--' }}</td>
+                                    <td class="py-2 px-4 text-right text-zinc-300">{{ record.gpu_power !== null ? record.gpu_power.toFixed(1) + 'W' : '--' }}</td>
+                                    <td class="py-2 px-4 text-right" :class="getTempColor(record.gpu_hotspot)">{{ record.gpu_hotspot !== null ? record.gpu_hotspot.toFixed(1) + '°' : '--' }}</td>
+                                    <td class="py-2 px-4 text-right" :class="getUsageColor(record.vram)">{{ record.vram.toFixed(1) }}%</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                        <div v-if="hwHistoryModal.history.length === 0" class="flex flex-col items-center justify-center h-64 text-zinc-500">
+                            <svg class="w-12 h-12 mb-4 opacity-50" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                            <p class="text-sm">No hardware history recorded yet.</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </transition>
+
+        <!-- Update Modal -->
+        <transition name="fade">
+            <div v-if="showUpdateModal" class="fixed inset-0 z-50 flex items-center justify-center p-4" @click.self="showUpdateModal = false">
+                <div class="absolute inset-0 bg-black/60 backdrop-blur-sm"></div>
+                <div class="relative bg-zinc-900 border border-zinc-800 rounded-xl p-6 max-w-lg w-full shadow-2xl">
+                    <h3 class="text-lg font-semibold text-zinc-100 mb-2">Update Llama.cpp Engine</h3>
+                    <p class="text-sm text-indigo-400 mb-2 font-mono">Latest Release: {{ releaseInfo.tag_name }}</p>
+                    <p v-if="releaseInfo.installed" class="text-xs text-emerald-400 mb-3">이 버전은 이미 설치되어 있습니다.</p>
+
+                    <template v-if="isWindows">
+                        <p v-if="releaseInfo.assets.length > 0" class="text-xs text-zinc-400 mb-3">Select the appropriate CUDA build for your architecture.</p>
+                        <p v-else class="text-xs text-zinc-400 mb-3">
+                            이 환경에서는 바이너리 자동 배포가 비활성화되어 있습니다.
+                            <a :href="releaseInfo.html_url" target="_blank" class="text-indigo-400 hover:text-indigo-300 underline">GitHub 릴리즈 페이지</a>에서 수동으로 업데이트하세요.
+                        </p>
+                        <select v-if="releaseInfo.assets.length > 0" v-model="selectedAsset" class="input-base w-full mb-6 font-mono text-xs">
+                            <option v-for="a in releaseInfo.assets" :key="a.name" :value="a">{{ a.name }}</option>
+                        </select>
+                        <div class="flex justify-end gap-3">
+                            <button @click="showUpdateModal = false" class="px-4 py-2 text-sm font-medium border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300 transition">Cancel</button>
+                            <button v-if="releaseInfo.assets.length > 0" @click="confirmUpdate" :disabled="isUpdating || !selectedAsset" class="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 rounded-lg transition flex items-center gap-2 disabled:opacity-50">
+                                <span v-if="isUpdating">Downloading...</span>
+                                <span v-else>Fetch & Extract</span>
+                            </button>
+                        </div>
+                    </template>
+
+                    <template v-else>
+                        <p class="text-xs text-zinc-400 mb-4">
+                            git에서 소스를 클론해 최신 CUDA 빌드를 자동으로 설치합니다.<br>
+                            설치 경로: <span class="font-mono text-zinc-300">{{ llamaInstallRoot }}/llama-{{ releaseInfo.tag_name }}</span>
+                        </p>
+
+                        <div v-if="buildState.busy" class="rounded-lg border border-zinc-700 bg-zinc-950/60 p-3 mb-4">
+                            <div class="flex items-center gap-2 mb-2">
+                                <svg class="animate-spin h-4 w-4 text-indigo-400" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                                <span class="text-xs font-medium text-indigo-300">Building {{ buildState.tag }} ... {{ buildState.message }}</span>
+                            </div>
+                            <pre class="log-container text-[10px] text-zinc-500 max-h-48 overflow-y-auto whitespace-pre-wrap">{{ buildLog }}</pre>
+                        </div>
+                        <div v-else-if="buildState.message && buildState.lastTag === releaseInfo.tag_name && !releaseInfo.installed" class="rounded-lg border border-zinc-700 bg-zinc-950/60 p-3 mb-4">
+                            <span class="text-xs" :class="buildState.message.startsWith('실패') ? 'text-rose-400' : 'text-emerald-400'">{{ buildState.message }}</span>
+                        </div>
+
+                        <div class="flex justify-end gap-3">
+                            <button @click="showUpdateModal = false" class="px-4 py-2 text-sm font-medium border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300 transition">Close</button>
+                            <button @click="confirmUpdateLinux" :disabled="isUpdating || buildState.busy || releaseInfo.installed" class="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 rounded-lg transition flex items-center gap-2 disabled:opacity-50">
+                                <span v-if="isUpdating">Starting...</span>
+                                <span v-else>Build & Install from Git</span>
+                            </button>
+                        </div>
+                    </template>
+                </div>
+            </div>
+        </transition>
+
+        <!-- Restarting Overlay -->
+        <transition name="fade">
+            <div v-if="isRestarting" class="fixed inset-0 z-[100] flex flex-col items-center justify-center bg-[#09090b]/90 backdrop-blur-md">
+                <svg class="animate-spin h-10 w-10 text-indigo-500 mb-6" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                <h2 class="text-xl font-semibold text-zinc-100 mb-2 tracking-tight">Restarting Console Service</h2>
+                <p class="text-sm text-zinc-500 font-mono">Reconnecting in {{ restartCountdown }}s...</p>
+            </div>
+        </transition>
+
+        <!-- Floating Memo -->
+        <button @click="toggleMemo" class="fixed bottom-6 right-6 w-12 h-12 bg-zinc-800 border border-zinc-700 hover:border-zinc-500 hover:bg-zinc-700 rounded-full shadow-lg flex items-center justify-center text-zinc-300 z-40 transition" title="Quick Notes">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg>
+        </button>
+
+        <transition name="slide-up">
+            <div v-if="memo.show" class="fixed bottom-24 right-6 w-80 sm:w-96 bg-zinc-900 border border-zinc-800 rounded-xl shadow-2xl z-40 flex flex-col overflow-hidden">
+                <div class="flex justify-between items-center bg-zinc-950 px-4 py-3 border-b border-zinc-800">
+                    <h3 class="font-medium text-zinc-200 text-xs uppercase tracking-wider">Scratchpad</h3>
+                    <button @click="toggleMemo" class="text-zinc-500 hover:text-zinc-300 transition">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+                <textarea v-model="memo.content" @input="debouncedSaveMemo" class="w-full h-64 bg-transparent text-sm p-4 outline-none text-zinc-300 resize-none font-mono selection:bg-zinc-800" placeholder="Store ports, prompts, or quick config notes. Auto-saves locally."></textarea>
+                <div class="bg-zinc-950 px-4 py-2 text-[10px] text-zinc-500 flex justify-end items-center gap-2 border-t border-zinc-800">
+                    <span v-if="memo.saving" class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse"></span> Syncing</span>
+                    <span v-else class="flex items-center gap-1.5"><span class="w-1.5 h-1.5 rounded-full bg-zinc-600"></span> Synced</span>
+                </div>
+            </div>
+        </transition>
+
+    </div>
+
+    <script>
+        const { createApp } = Vue;
+
+        createApp({
+            data() {
+                return {
+                    hw: {
+                        cpu: 0, ram: 0, gpu: 0, vram: 0, vram_used: 0, vram_total: 0,
+                        cpu_temp: null, cpu_core_temps: [], cpu_fan: null, cpu_power: null,
+                        ram_temp: null,
+                        gpu_temp: null, gpu_hotspot: null, gpu_fan: null, gpu_power: null,
+                        lhm_available: false
+                    },
+                    status: { comfyui: false, llamacpp: false, telegram_bot: false, watcher: false },
+                    loading: { comfyui: false, llamacpp: false, bot: false, watcher: false, status: false },
+                    scanData: { versions:[], models:[] },
+                    logModal: { show: false, server: '', title: '', content: '', autoScroll: true },
+                    logTimer: null, hwTimer: null,
+                    comfySettings: {
+                        use_sage_attention: true,
+                        preview_method_none: false,
+                        cache_none: false,
+                        reserve_vram_1: false,
+                        disable_async_offload: false,
+                        fast_disk: false
+                    },
+                    comfySettingsSaving: false,
+                    comfyOptionDefs: [
+                        { key: 'use_sage_attention', label: '--use-sage-attention' },
+                        { key: 'preview_method_none', label: '--preview-method none' },
+                        { key: 'cache_none', label: '--cache-none' },
+                        { key: 'reserve_vram_1', label: '--reserve-vram 1' },
+                        { key: 'disable_async_offload', label: '--disable-async-offload' },
+                        { key: 'fast_disk', label: '--fast-disk' }
+                    ],
+                    memo: { show: false, content: '', saving: false }, memoTimeout: null,
+                    isFetchingReleases: false, showUpdateModal: false,
+                    releaseInfo: { tag_name: "", html_url: "", assets: [], installed: false },
+                    selectedAsset: null, isUpdating: false,
+                    modelRootInput: "/mnt/model", modelRootSaving: false,
+                    buildState: { busy: false, tag: "", message: "", lastTag: "" },
+                    buildLog: "", buildLogTimer: null, isWindows: false,
+                    llamaInstallRoot: "/opt",
+                    isRestarting: false, restartCountdown: 6,
+                    selectedPreset: "", presets: {},
+                    config: {
+                        version: "", model: "", mmproj: "", ctx: "262144", host: "0.0.0.0", port: "8080",
+                        fit: true, flash: true, cacheK: "q4_0", cacheV: "q4_0", tempMode: "", useTemplate: false,
+                        reasoningBudget: "", ngl: "999", nPredict: "-1", parallel: "1", threads: ""
+                    },
+                    hwHistoryModal: { show: false, history: [] },
+                    hwHistoryTimer: null
+                };
+            },
+            computed: {
+                computedCommand() {
+                    let cmd =[];
+                    if (this.config.model) cmd.push(`-m "${this.config.model}"`);
+                    if (this.config.mmproj) cmd.push(`--mmproj "${this.config.mmproj}"`);
+                    if (this.config.host) cmd.push(`--host ${this.config.host}`);
+                    if (this.config.port) cmd.push(`--port ${this.config.port}`);
+                    if (this.config.ctx) cmd.push(`--ctx-size ${this.config.ctx}`);
+                    
+                    if (this.config.ngl && this.config.ngl !== "") cmd.push(`-ngl ${this.config.ngl}`);
+                    if (this.config.reasoningBudget !== "") cmd.push(`--reasoning-budget ${this.config.reasoningBudget}`);
+                    if (this.config.nPredict && this.config.nPredict !== "-1") cmd.push(`-n ${this.config.nPredict}`);
+                    if (this.config.parallel && this.config.parallel !== "1") cmd.push(`-np ${this.config.parallel}`);
+                    if (this.config.threads && this.config.threads !== "") cmd.push(`-t ${this.config.threads}`);
+
+                    if (this.config.fit) cmd.push(`--fit on`);
+                    if (this.config.flash) cmd.push(`--flash-attn on`);
+                    if (this.config.cacheK) cmd.push(`--cache-type-k ${this.config.cacheK}`);
+                    if (this.config.cacheV) cmd.push(`--cache-type-v ${this.config.cacheV}`);
+
+                    if (this.config.tempMode === 'general') {
+                        cmd.push(`--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --repeat-penalty 1.0`);
+                    } else if (this.config.tempMode === 'coding') {
+                        cmd.push(`--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0`);
+                    }
+
+                    if (this.config.useTemplate) {
+                        cmd.push(`--jinja`);
+                    }
+                    return cmd.join(" ");
+                }
+            },
+            methods: {
+                getDirName(path) {
+                    if (!path) return "";
+                    const parts = String(path).split(/[\\/]/);
+                    return parts[parts.length - 1] || path;
+                },
+
+                // 모던한 컬러 팔레트 적용 (Zinc, Emerald, Amber, Rose)
+                getColor(temp) {
+                    if (temp === null || temp === undefined) return 'text-zinc-600';
+                    if (temp < 50) return 'text-emerald-400';
+                    if (temp < 70) return 'text-amber-400';
+                    if (temp < 85) return 'text-orange-500';
+                    return 'text-rose-500';
+                },
+
+                // 하드웨어 이력용 컬러 함수
+                getUsageColor(value) {
+                    if (value === null || value === undefined) return 'text-zinc-600';
+                    if (value < 50) return 'text-emerald-400';
+                    if (value < 75) return 'text-amber-400';
+                    if (value < 90) return 'text-orange-500';
+                    return 'text-rose-500';
+                },
+
+                getTempColor(temp) {
+                    if (temp === null || temp === undefined) return 'text-zinc-600';
+                    if (temp < 50) return 'text-emerald-400';
+                    if (temp < 70) return 'text-amber-400';
+                    if (temp < 85) return 'text-orange-500';
+                    return 'text-rose-500';
+                },
+
+                // 시간 포맷 (타임스탬프 -> HH:MM:SS)
+                formatTime(timestamp) {
+                    if (!timestamp) return '--:--:--';
+                    const date = new Date(timestamp * 1000);
+                    return date.toLocaleTimeString('ko-KR', { hour12: false });
+                },
+
+                // 하드웨어 이력 모달
+                async openHwHistoryModal() {
+                    this.hwHistoryModal.show = true;
+                    await this.fetchHwHistory();
+                    this.hwHistoryTimer = setInterval(this.fetchHwHistory, 2000);
+                },
+
+                closeHwHistoryModal() {
+                    this.hwHistoryModal.show = false;
+                    clearInterval(this.hwHistoryTimer);
+                },
+
+                async fetchHwHistory() {
+                    if (!this.hwHistoryModal.show) return;
+                    try {
+                        const res = await fetch('/api/hardware/history');
+                        const data = await res.json();
+                        this.hwHistoryModal.history = (data.history || []).map(h => ({
+                            timestamp: h.t,
+                            cpu: h.cpu,
+                            ram: h.ram,
+                            gpu: (h.gpu_util && h.gpu_util.length) ? h.gpu_util[0] : 0,
+                            vram: (h.gpu_mem && h.gpu_mem.length) ? h.gpu_mem[0] : 0,
+                            cpu_temp: null, cpu_power: null, cpu_fan: null,
+                            gpu_temp: null, gpu_power: null, gpu_hotspot: null,
+                        }));
+                    } catch (e) { console.error('Failed to fetch HW history:', e); }
+                },
+
+                async clearHwHistory() {
+                    if (!confirm('하드웨어 이력을 모두 삭제하시겠습니까?')) return;
+                    try {
+                        await fetch('/api/clear_hw_history', { method: 'POST' });
+                        this.hwHistoryModal.history = [];
+                    } catch (e) { alert('이력 삭제 실패'); }
+                },
+
+                async fetchHardware() {
+                    if (this.isRestarting) return;
+                    try {
+                        const res = await fetch('/api/hardware');
+                        const d = await res.json();
+                        const g = (d.gpus && d.gpus[0]) || {};
+                        this.hw = {
+                            cpu: d.cpu_percent ?? 0,
+                            ram: d.ram_percent ?? 0,
+                            gpu: g.util ?? 0,
+                            vram: g.mem_util ?? 0,
+                            vram_used: +((g.vram_used || 0) / 1024).toFixed(1),
+                            vram_total: +((g.vram_total || 0) / 1024).toFixed(1),
+                            cpu_temp: null, cpu_core_temps: [], cpu_fan: null, cpu_power: null,
+                            ram_temp: null,
+                            gpu_temp: g.temp ?? null, gpu_hotspot: null, gpu_fan: null, gpu_power: g.power ?? null,
+                            lhm_available: false
+                        };
+                    } catch (e) { }
+                },
+
+                async fetchStatus() {
+                    if (this.isRestarting) return; 
+                    this.loading.status = true;
+                    try {
+                        const res = await fetch('/api/status');
+                        const d = await res.json();
+                        const svc = d.services || {};
+                        this.status = {
+                            comfyui: !!(svc.comfyui && svc.comfyui.running),
+                            llamacpp: !!(svc.llama && svc.llama.running),
+                            telegram_bot: !!(svc.bot && svc.bot.running),
+                            watcher: !!(svc.watcher && svc.watcher.running)
+                        };
+                    } catch (e) { }
+                    this.loading.status = false;
+                },
+
+                async fetchComfySettings() {
+                    try {
+                        const res = await fetch('/api/comfy/settings');
+                        const data = await res.json();
+                        this.comfySettings = { ...this.comfySettings, ...data };
+                    } catch (e) {}
+                },
+
+                async saveComfySettings() {
+                    this.comfySettingsSaving = true;
+                    try {
+                        await fetch('/api/comfy/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.comfySettings)
+                        });
+                    } catch (e) {
+                        alert('ComfyUI option save failed');
+                    }
+                    this.comfySettingsSaving = false;
+                },
+
+                async forceKill(server) {
+                    const serverNames = { 'bot': 'Telegram Bot', 'watcher': 'Local Watcher', 'comfyui': 'ComfyUI', 'llamacpp': 'Llama.cpp' };
+                    const serverName = serverNames[server] || server;
+                    
+                    const confirmed = confirm(`[FORCE KILL] ${serverName}\n\nWARNING: This will instantly terminate the process and dump VRAM.\nUnsaved data will be lost.\n\nProceed?`);
+                    if (!confirmed) return;
+                    
+                    try {
+                        const apiServer = server === 'llamacpp' ? 'llama' : server;
+                        await fetch(`/api/force_kill/${apiServer}`, { method: 'POST' });
+                        setTimeout(() => this.fetchStatus(), 1000);
+                    } catch(e) { alert("Kill request failed"); }
+                },
+                
+                async panicKill() {
+                    if(!confirm(`[TERMINATE ALL] Execute global panic kill?\nAll AI processes will be instantly terminated to free VRAM.`)) {
+                        return;
+                    }
+                    try {
+                        const res = await fetch('/api/panic', { method: 'POST' });
+                        if (!res.ok) throw new Error(await res.text());
+                        setTimeout(() => this.fetchStatus(), 1500);
+                    } catch(e) { alert("Panic sequence failed: " + e.message); }
+                },
+
+                openLogModal(server) {
+                    const titles = { 'bot': 'Telegram Bot', 'watcher': 'Local Watcher', 'comfyui': 'ComfyUI', 'llamacpp': 'Llama.cpp' };
+                    this.logModal.server = server;
+                    this.logModal.title = titles[server];
+                    this.logModal.show = true;
+                    this.logModal.content = 'Waiting for stream...';
+                    this.logModal.autoScroll = true;
+                    document.body.classList.add('modal-open');
+
+                    this.fetchLogs();
+                    this.fetchHardware();
+                    this.logTimer = setInterval(this.fetchLogs, 1000);
+                    this.hwTimer = setInterval(this.fetchHardware, 2000);
+                },
+                closeLogModal() {
+                    this.logModal.show = false;
+                    document.body.classList.remove('modal-open');
+                    clearInterval(this.logTimer);
+                    clearInterval(this.hwTimer);
+                },
+                async fetchLogs() {
+                    if(!this.logModal.show) return;
+                    try {
+                        const apiName = this.logModal.server === 'llamacpp' ? 'llama' : this.logModal.server;
+                        const res = await fetch(`/api/logs/${apiName}?lines=600&t=${new Date().getTime()}`);
+                        const data = await res.json();
+                        const text = (data.lines || []).join('\n');
+
+                        if (this.logModal.content !== text) {
+                            this.logModal.content = text || "Waiting for stream...";
+                            if (this.logModal.autoScroll) {
+                                this.$nextTick(() => {
+                                    const container = document.getElementById('log-terminal');
+                                    if (container) container.scrollTop = container.scrollHeight;
+                                });
+                            }
+                        }
+                    } catch(e) {}
+                },
+                async clearLog() {
+                    try {
+                        const apiName = this.logModal.server === 'llamacpp' ? 'llama' : this.logModal.server;
+                        await fetch(`/api/clear_log/${apiName}`, { method: 'POST' });
+                        this.logModal.content = "Buffer cleared.\n";
+                    } catch(e) {}
+                },
+
+                async fetchMemo() {
+                    try {
+                        const res = await fetch('/api/memo');
+                        const data = await res.json();
+                        this.memo.content = data.memo || "";
+                    } catch (e) {}
+                },
+                toggleMemo() {
+                    this.memo.show = !this.memo.show;
+                    if (this.memo.show && !this.memo.content) this.fetchMemo();
+                },
+                debouncedSaveMemo() {
+                    this.memo.saving = true;
+                    clearTimeout(this.memoTimeout);
+                    this.memoTimeout = setTimeout(async () => {
+                        try {
+                            await fetch('/api/memo?memo=' + encodeURIComponent(this.memo.content), { method: 'POST' });
+                        } catch(e) {}
+                        this.memo.saving = false;
+                    }, 1000); 
+                },
+
+                async openFolder(target) {
+                    const t = target === 'model' ? 'model_root' : target;
+                    try { await fetch(`/api/open_folder/${t}`, { method: 'POST' }); }
+                    catch(e) { console.error("Could not open folder"); }
+                },
+
+                async openTerminal(target) {
+                    try { await fetch(`/api/open_terminal/${target}`, { method: 'POST' }); }
+                    catch(e) { alert("Terminal open failed"); }
+                },
+
+                async controlServer(server, action) {
+                    this.loading[server] = true;
+                    try {
+                        const fetchOptions = { method: 'POST' };
+                        if (server === 'comfyui' && action === 'start') {
+                            fetchOptions.headers = { 'Content-Type': 'application/json' };
+                            fetchOptions.body = JSON.stringify(this.comfySettings);
+                        }
+                        const res = await fetch(`/api/${({ bot: 'bot', watcher: 'watcher', comfyui: 'comfy', llamacpp: 'llama' }[server] || server)}/${action}`, fetchOptions);
+                        if (!res.ok) throw new Error(await res.text());
+                        setTimeout(async () => {
+                            await this.fetchStatus();
+                            this.loading[server] = false;
+                        }, 3000);
+                    } catch (e) {
+                        this.loading[server] = false;
+                        alert("Request failed: " + e.message);
+                    }
+                },
+                
+                async startLlama() {
+                    if (!this.config.version) return alert("Select Engine Version first.");
+                    let headers = { 'Content-Type': 'application/json' };
+
+                    this.loading.llamacpp = true;
+                    
+                    try {
+                        const res = await fetch('/api/llama/start', {
+                            method: 'POST',
+                            headers,
+                            body: JSON.stringify(this.config)
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        setTimeout(async () => {
+                            await this.fetchStatus();
+                            this.loading.llamacpp = false;
+                        }, 3000);
+                    } catch (e) {
+                        this.loading.llamacpp = false;
+                        alert("Engine launch failed: " + e.message);
+                    }
+                },
+
+                async restartManager() {
+                    if(!confirm("Restart Console Service? (Running AI services will remain active)")) return;
+                    try {
+                        await fetch('/api/restart', { method: 'POST' });
+                        this.isRestarting = true;
+                        const timer = setInterval(() => {
+                            this.restartCountdown--;
+                            if (this.restartCountdown <= 0) {
+                                clearInterval(timer);
+                                window.location.reload();
+                            }
+                        }, 1000);
+                    } catch (e) { alert("Restart failed"); }
+                },
+
+                async fetchScanData() {
+                    try {
+                        const res = await fetch('/api/llama/scan');
+                        const d = await res.json();
+                        this.scanData = {
+                            versions: (d.versions || []).map(v => v.path),
+                            models: (d.models || []).map(m => m.path),
+                            mmproj: (d.mmproj_models || []).map(m => m.path),
+                            model_root: d.model_root || ''
+                        };
+                        if (d.model_root) this.modelRootInput = d.model_root;
+                        if (d.llama_install_root) this.llamaInstallRoot = d.llama_install_root;
+                        if (this.scanData.versions.length > 0 && !this.config.version) {
+                            this.config.version = this.scanData.versions[0];
+                        }
+                    } catch (e) { }
+                },
+                
+                async openUpdateModal() {
+                    this.isFetchingReleases = true;
+                    try {
+                        const res = await fetch('/api/llama/releases');
+                        const data = await res.json();
+                        this.isWindows = data.platform === 'windows';
+                        this.releaseInfo = {
+                            tag_name: data.tag_name || '',
+                            html_url: data.html_url || '',
+                            assets: data.assets || [],
+                            installed: !!data.installed,
+                            git_url: data.git_url || '',
+                        };
+                        this.selectedAsset = null;
+                        this.showUpdateModal = true;
+                        if (!this.isWindows) this.startBuildPolling();
+                    } catch (e) { alert("Failed to fetch GitHub releases."); }
+                    this.isFetchingReleases = false;
+                },
+
+                startBuildPolling() {
+                    if (this.buildLogTimer) clearInterval(this.buildLogTimer);
+                    this.fetchBuildStatus();
+                    this.buildLogTimer = setInterval(this.fetchBuildStatus, 2000);
+                },
+                stopBuildPolling() {
+                    if (this.buildLogTimer) { clearInterval(this.buildLogTimer); this.buildLogTimer = null; }
+                },
+                async fetchBuildStatus() {
+                    try {
+                        const res = await fetch('/api/llama/install/status');
+                        const d = await res.json();
+                        const st = d.state || {};
+                        if (this.buildState.busy && !st.busy) {
+                            this.buildState.lastTag = st.tag || this.buildState.tag;
+                        }
+                        this.buildState.busy = st.busy;
+                        this.buildState.tag = st.tag || this.buildState.tag;
+                        this.buildState.message = st.message || '';
+                        if (!st.busy) { this.stopBuildPolling(); this.fetchScanData(); }
+                        this.buildLog = (d.log || []).join('\n');
+                    } catch (e) {}
+                },
+
+                async confirmUpdateLinux() {
+                    if (!this.releaseInfo.tag_name) return;
+                    this.isUpdating = true;
+                    try {
+                        const res = await fetch('/api/llama/install?tag=' + encodeURIComponent(this.releaseInfo.tag_name), { method: 'POST' });
+                        if (!res.ok) throw new Error(await res.text());
+                        this.startBuildPolling();
+                    } catch (e) { alert("Build start failed: " + e.message); }
+                    this.isUpdating = false;
+                },
+
+                async loadLlamaSettings() {
+                    try {
+                        const res = await fetch('/api/llama/settings');
+                        const data = await res.json();
+                        this.modelRootInput = data.model_root || this.modelRootInput;
+                    } catch (e) {}
+                },
+
+                async saveModelRoot() {
+                    this.modelRootSaving = true;
+                    try {
+                        const res = await fetch('/api/llama/settings', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ model_root: this.modelRootInput, vram_cleanup_enabled: true })
+                        });
+                        if (!res.ok) {
+                            const err = await res.json().catch(() => null);
+                            throw new Error(err?.detail || await res.text());
+                        }
+                        const data = await res.json();
+                        this.modelRootInput = data.model_root;
+                        this.fetchScanData();
+                    } catch (e) { alert('Model root 저장 실패: ' + e.message); }
+                    this.modelRootSaving = false;
+                },
+
+                async cleanupLlamaVersions() {
+                    if (!confirm('가장 최신 llama.cpp 버전 하나만 남기고 모두 삭제합니다.\n\n계속하시겠습니까?')) return;
+                    
+                    try {
+                        const res = await fetch('/api/llama/cleanup', { method: 'POST' });
+                        const data = await res.json();
+                        
+                        if (data.status === 'no_versions' || data.status === 'no_old_versions') {
+                            alert(data.message);
+                        } else if (data.status === 'completed') {
+                            let msg = `정리 완료!\n\n유지: ${data.kept}\n삭제됨: ${data.deleted.length}개`;
+                            if (data.failed.length > 0) {
+                                msg += `\n\n실패: ${data.failed.join(', ')}`;
+                            }
+                            alert(msg);
+                            this.fetchScanData();
+                        }
+                    } catch (e) {
+                        alert('정리 실패: ' + e.message);
+                    }
+                },
+
+                async confirmUpdate() {
+                    if (!this.selectedAsset) return;
+                    this.isUpdating = true;
+                    try {
+                        await fetch('/api/llama/models/download', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ url: this.selectedAsset.download_url, name: this.selectedAsset.name })
+                        });
+                        this.showUpdateModal = false;
+                        await this.fetchScanData();
+                    } catch (e) { alert("Update processing failed."); }
+                    this.isUpdating = false;
+                },
+
+                async loadPresetsFromServer() {
+                    try {
+                        const res = await fetch('/api/presets');
+                        const data = await res.json();
+                        this.presets = data.presets || {};
+                    } catch (e) { }
+                },
+                
+                async executePresetSave(name) {
+                    this.presets[name] = JSON.parse(JSON.stringify(this.config));
+                    try {
+                        await fetch('/api/presets', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.presets)
+                        });
+                        this.selectedPreset = name;
+                    } catch (e) { alert("Save failed"); }
+                },
+                
+                async savePresetOverwrite() {
+                    if (!this.selectedPreset) return;
+                    await this.executePresetSave(this.selectedPreset);
+                },
+                
+                async savePresetAs() {
+                    const name = prompt("Enter new preset name:");
+                    if (!name) return;
+                    if (this.presets[name] && !confirm("Overwrite existing preset?")) return;
+                    await this.executePresetSave(name);
+                },
+                
+                async deletePreset() {
+                    if(!confirm(`Delete preset '${this.selectedPreset}'?`)) return;
+                    delete this.presets[this.selectedPreset];
+                    this.selectedPreset = "";
+                    try {
+                        await fetch('/api/presets', {
+                            method: 'POST', headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify(this.presets)
+                        });
+                    } catch (e) { }
+                },
+                
+                loadPreset() {
+                    if (this.selectedPreset && this.presets[this.selectedPreset]) {
+                        this.config = { ...this.config, ...this.presets[this.selectedPreset] };
+                    }
+                },
+                
+                async loadLastRun() {
+                    try {
+                        const res = await fetch('/api/last_run');
+                        const lastRunData = await res.json();
+                        if (Object.keys(lastRunData).length > 0) {
+                            this.config = { ...this.config, ...lastRunData };
+                            if(this.config.reasoningBudget === undefined) this.config.reasoningBudget = "";
+                            if(this.config.ngl === undefined) this.config.ngl = "999";
+                            if(this.config.nPredict === undefined) this.config.nPredict = "-1";
+                            if(this.config.parallel === undefined) this.config.parallel = "1";
+                            if(this.config.threads === undefined) this.config.threads = "";
+                        }
+                    } catch (e) {}
+                }
+            },
+            async mounted() {
+                await this.loadPresetsFromServer();
+                await this.loadLastRun();
+                await this.loadLlamaSettings();
+                await this.fetchMemo();
+                await this.fetchComfySettings();
+                this.fetchScanData();
+                this.fetchStatus();
+                this.fetchHardware();
+                
+                setInterval(() => {
+                    this.fetchStatus();
+                    this.fetchHardware();
+                }, 2000);
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>

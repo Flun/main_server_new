@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { width: 330px; margin: 0; padding: 16px; color: #e4e4e7; background: #09090b; font: 13px system-ui, sans-serif; }
+    h1 { margin: 0 0 8px; font-size: 16px; }
+    p { color: #a1a1aa; line-height: 1.45; }
+    button { box-sizing: border-box; width: 100%; margin-top: 8px; padding: 9px; border: 1px solid #3f3f46; border-radius: 6px; }
+    button { border-color: #10b981; color: #052e16; background: #10b981; font-weight: 700; cursor: pointer; }
+    button:disabled { cursor: wait; opacity: .55; }
+    #status { min-height: 38px; margin-top: 10px; color: #6ee7b7; white-space: pre-wrap; }
+  </style>
+</head>
+<body>
+  <h1>Instagram 쿠키 동기화</h1>
+  <p>Chrome에 로그인된 Instagram 쿠키만 127.0.0.1의 서버 공용 저장소로 보냅니다. 모든 데이터셋에서 함께 사용됩니다.</p>
+  <button id="sync">현재 Chrome 쿠키를 서버에 동기화</button>
+  <div id="status"></div>
+  <script src="popup.js"></script>
+</body>
+</html>
