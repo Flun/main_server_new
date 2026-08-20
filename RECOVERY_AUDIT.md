@@ -18,7 +18,9 @@
   ComfyUI 큐가 유휴 상태가 된 뒤 모델/메모리를 해제하며, ComfyUI 커스텀 노드는
   교착 방지를 위해 `8082`를 직접 사용
 - Media Studio의 URL 다운로드, 품질/오디오 옵션, 진행 상태, 경로 복사 기능
-- Dataset, Vast.ai, 모델 허브 및 Chrome Instagram 쿠키 브리지 페이지
+- Dataset, Vast.ai 및 Chrome Instagram 쿠키 브리지 페이지
+- Model Hub 재구현: Hugging Face/Civitai/직접 URL 검사, 파일별 선택,
+  모델 폴더 제한, 이어받기, 작업 진행률, 설치된 모델 검색
 - Windows 전용 기본 경로를 현재 Ubuntu 설치 경로로 교체
 
 ## 보존 및 검증 기준
@@ -28,6 +30,11 @@
 - 실행 파일의 실제 `--help` 및 현재 ComfyUI CLI 정의와 옵션명을 대조
 - Python 구문/컴파일, API 응답, 브라우저 UI, 서비스 재기동, 포트 프록시를 검증 대상으로 삼음
 - Ubuntu 시스템 의존성 `ffmpeg`/`ffprobe`와 Media Studio Python 패키지 설치 확인
+- `--sleep-idle-seconds` 활성화 시 llama.cpp의 알려진 `--fit` 재로딩 충돌을
+  피하도록 `--fit off`를 강제하고 두 번의 sleep/wake 추론 주기를 검증
+- ComfyUI JH llama 노드의 직접 백엔드를 `8082`로 변경하고 기존 `8080`
+  워크플로 입력도 실행 시 자동 변환해 VRAM 가드 자기대기 교착을 방지
+  (`patches/comfyui_jh_llama_8082.patch`로 외부 저장소 변경도 보존)
 
 ## 원본 없이 완전 복구할 수 없는 범위
 

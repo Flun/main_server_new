@@ -1,363 +1,495 @@
+"""Model Hub API: inspect model links, choose files, and download safely.
+
+The hub intentionally manages model folders only. General filesystem and
+application settings belong to the main dashboard, not the model downloader.
+"""
+
+import json
 import os
 import re
 import shutil
 import threading
 import time
 import uuid
+from pathlib import Path
+from typing import Any
+from urllib.parse import parse_qs, unquote, urlparse
 
-from fastapi import APIRouter, File, Form, UploadFile
-from fastapi.responses import FileResponse
+import httpx
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel, Field
 
-from config import IS_WINDOWS, settings
+from config import BASE_DIR, settings
 
-router = APIRouter(prefix="/api", tags=["model-hub"])
+router = APIRouter(prefix="/api/models", tags=["model-hub"])
 
-# ---------- 파일 탐색기 ----------
+MODEL_EXTENSIONS = {
+    ".gguf", ".safetensors", ".ckpt", ".pt", ".pth", ".bin",
+    ".onnx", ".json", ".yaml", ".yml", ".txt", ".model",
+}
+PRIMARY_MODEL_EXTENSIONS = {".gguf", ".safetensors", ".ckpt", ".pt", ".pth", ".bin", ".onnx"}
+MAX_INSPECT_FILES = 2500
+MAX_INSTALLED_FILES = 3000
+JOBS: dict[str, dict[str, Any]] = {}
+JOBS_LOCK = threading.Lock()
 
-MAX_ENTRIES = 500
+
+class InspectRequest(BaseModel):
+    url: str
 
 
-def _roots():
-    if IS_WINDOWS:
-        drives = []
-        import string
+class DownloadFile(BaseModel):
+    name: str
+    url: str | None = None
+    size: int | None = None
 
-        for letter in string.ascii_uppercase:
-            d = f"{letter}:\\"
-            if os.path.exists(d):
-                drives.append(d)
-        return drives
-    roots = ["/", "/mnt", "/opt", "/home"]
-    for key in ("model_root", "comfyui_dir", "bot_dir", "watcher_dir"):
-        p = settings.get(key)
-        if p and p not in roots and os.path.exists(p):
-            roots.append(p)
+
+class DownloadRequest(BaseModel):
+    source: str
+    repo: str | None = None
+    revision: str = "main"
+    files: list[DownloadFile] = Field(min_length=1, max_length=100)
+    destination: str
+
+
+class FolderRequest(BaseModel):
+    parent: str
+    name: str
+
+
+def _resolved(path: str | Path) -> Path:
+    return Path(path).expanduser().resolve()
+
+
+def _base_roots() -> list[dict[str, str]]:
+    llama_root = settings.get("model_root")
+    try:
+        with open(Path(BASE_DIR) / "llama_settings.json", encoding="utf-8") as settings_file:
+            saved = json.load(settings_file)
+        llama_root = saved.get("model_root") or llama_root
+    except (OSError, ValueError, TypeError):
+        pass
+    candidates = [
+        ("llama.cpp 모델", llama_root),
+        ("ComfyUI 모델", Path(settings.get("comfyui_dir")) / "models"),
+    ]
+    roots = []
+    seen = set()
+    for label, raw in candidates:
+        if not raw:
+            continue
+        path = _resolved(raw)
+        key = str(path)
+        if key in seen or not path.is_dir():
+            continue
+        seen.add(key)
+        roots.append({"label": label, "path": key})
     return roots
 
 
-@router.get("/fs/roots")
-def fs_roots():
-    roots = _roots()
+def _assert_model_path(path: str, *, must_exist: bool = True) -> Path:
+    target = _resolved(path)
+    allowed = [_resolved(item["path"]) for item in _base_roots()]
+    if not allowed or not any(target == root or root in target.parents for root in allowed):
+        raise HTTPException(400, "모델 루트 폴더 밖의 경로는 사용할 수 없습니다")
+    if must_exist and not target.is_dir():
+        raise HTTPException(400, f"대상 폴더가 없습니다: {target}")
+    return target
+
+
+def _destination_items() -> list[dict[str, Any]]:
     items = []
-    for r in roots:
+    for root in _base_roots():
+        base = _resolved(root["path"])
+        folders = [base]
         try:
-            st = os.stat(r)
-            items.append(
-                {
-                    "name": r if not r.endswith(":\\") else r,
-                    "path": r,
-                    "is_dir": True,
-                    "size": 0,
-                    "mtime": int(st.st_mtime),
-                }
+            folders += sorted(
+                (p for p in base.iterdir() if p.is_dir() and not p.name.startswith(".")),
+                key=lambda p: p.name.lower(),
             )
         except OSError:
-            items.append({"name": r, "path": r, "is_dir": True, "size": 0, "mtime": 0})
-    return {"roots": items}
+            pass
+        for folder in folders:
+            try:
+                free = shutil.disk_usage(folder).free
+            except OSError:
+                free = None
+            leaf = "root" if folder == base else folder.name.replace("_", " ")
+            items.append({
+                "label": f"{root['label']} / {leaf}",
+                "path": str(folder),
+                "root": str(base),
+                "free_bytes": free,
+            })
+    return items
 
 
-def _safe_path(path):
-    p = os.path.abspath(path)
-    if not os.path.exists(p):
-        raise FileNotFoundError(path)
-    return p
+def _safe_relative_file(name: str) -> str:
+    value = unquote(str(name or "")).replace("\\", "/").lstrip("/")
+    parts = [part for part in value.split("/") if part not in ("", ".")]
+    if not parts or any(part == ".." for part in parts):
+        raise ValueError(f"안전하지 않은 파일 경로입니다: {name}")
+    return "/".join(parts)
 
 
-@router.get("/fs/list")
-def fs_list(path: str = "/"):
-    p = _safe_path(path)
-    if not os.path.isdir(p):
-        raise FileNotFoundError(f"디렉터리가 아닙니다: {p}")
-    try:
-        names = os.listdir(p)
-    except PermissionError:
-        raise PermissionError(f"권한 없음: {p}")
-    entries = []
-    for name in names:
-        if name.startswith("."):
-            continue
-        full = os.path.join(p, name)
-        try:
-            st = os.stat(full)
-            entries.append(
-                {
-                    "name": name,
-                    "path": full,
-                    "is_dir": os.path.isdir(full),
-                    "size": st.st_size,
-                    "mtime": int(st.st_mtime),
-                }
-            )
-        except OSError:
-            continue
-    entries.sort(key=lambda e: (not e["is_dir"], e["name"].lower()))
-    return {"path": p, "parent": os.path.dirname(p), "entries": entries[:MAX_ENTRIES], "truncated": len(entries) > MAX_ENTRIES}
-
-
-@router.post("/fs/mkdir")
-def fs_mkdir(path: str, name: str):
-    target = os.path.join(path, name)
-    if os.path.exists(target):
-        raise FileExistsError(target)
-    os.makedirs(target, exist_ok=True)
-    return {"ok": True, "path": target}
-
-
-@router.delete("/fs/delete")
-def fs_delete(path: str):
-    p = _safe_path(path)
-    if os.path.isdir(p):
-        shutil.rmtree(p, ignore_errors=True)
-    else:
-        os.remove(p)
-    return {"ok": True}
-
-
-@router.post("/fs/rename")
-def fs_rename(path: str, new_name: str):
-    p = _safe_path(path)
-    new_path = os.path.join(os.path.dirname(p), new_name)
-    os.rename(p, new_path)
-    return {"ok": True, "path": new_path}
-
-
-@router.post("/fs/upload")
-async def fs_upload(path: str = Form(...), file: UploadFile = File(...)):
-    target = os.path.join(path, os.path.basename(file.filename or "file"))
-    with open(target, "wb") as out:
-        while chunk := await file.read(1024 * 256):
-            out.write(chunk)
-    return {"ok": True, "path": target, "size": os.path.getsize(target)}
-
-
-@router.get("/fs/download")
-def fs_download(path: str):
-    p = _safe_path(path)
-    return FileResponse(p, filename=os.path.basename(p))
-
-
-# ---------- 모델 다운로더 ----------
-
-JOBS = {}
-LOCK = threading.Lock()
-MAX_JOBS = 20
-
-
-def _fmt(n):
-    if n is None:
-        return "—"
-    units = ["B", "KB", "MB", "GB", "TB"]
-    v = float(n)
-    for u in units:
-        if v < 1024:
-            return f"{v:.1f} {u}"
-        v /= 1024
-    return f"{v:.1f} PB"
-
-
-def _human_url(url):
-    return url if len(url) <= 90 else url[:87] + "..."
-
-
-def _hf_id(url):
-    m = re.search(r"(?:huggingface\.co|hf\.co)/([^/\s]+)/([^/\s?#]+)", url)
-    if not m:
+def _hf_source(url: str) -> dict[str, str] | None:
+    parsed = urlparse(url)
+    if parsed.hostname not in {"huggingface.co", "www.huggingface.co", "hf.co"}:
         return None
-    repo = f"{m.group(1)}/{m.group(2)}"
-    rest = url[m.end() :]
-    rest = rest.split("?")[0].split("#")[0]
-    rest = rest.lstrip("/")
-    if rest.startswith("resolve/"):
-        parts = rest.split("/", 2)
-        rest = parts[2] if len(parts) > 2 else ""
-    return repo, rest
+    parts = [unquote(part) for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        raise ValueError("Hugging Face 주소에는 소유자와 저장소 이름이 필요합니다")
+    repo = "/".join(parts[:2])
+    revision = "main"
+    filename = ""
+    if len(parts) >= 4 and parts[2] in {"resolve", "blob", "tree"}:
+        revision = parts[3]
+        if parts[2] != "tree" and len(parts) > 4:
+            filename = "/".join(parts[4:])
+    return {"source": "huggingface", "repo": repo, "revision": revision, "filename": filename}
 
 
-def _civitai_info(url):
-    if "civitai.com/api/download/models/" in url:
-        return {"type": "civitai", "model_id": url.rstrip("/").rsplit("/", 1)[-1]}
-    m = re.search(r"civitai\.com/models/(\d+)", url)
-    if m:
-        return {"type": "civitai-model", "model_id": m.group(1)}
-    m = re.search(r"civitai\.com/api/models/(\d+)", url)
-    if m:
-        return {"type": "civitai-model", "model_id": m.group(1)}
-    return None
+def _civitai_source(url: str) -> dict[str, str] | None:
+    parsed = urlparse(url)
+    if parsed.hostname not in {"civitai.com", "www.civitai.com"}:
+        return None
+    query = parse_qs(parsed.query)
+    if query.get("modelVersionId"):
+        return {"source": "civitai", "version_id": query["modelVersionId"][0]}
+    for pattern in (r"/api/download/models/(\d+)", r"/api/v1/model-versions/(\d+)"):
+        match = re.search(pattern, parsed.path)
+        if match:
+            return {"source": "civitai", "version_id": match.group(1)}
+    match = re.search(r"/models/(\d+)", parsed.path)
+    if match:
+        return {"source": "civitai", "model_id": match.group(1)}
+    raise ValueError("지원되는 Civitai 모델 또는 버전 주소가 아닙니다")
 
 
-def _parse_url(url):
-    if not url.startswith(("http://", "https://")):
-        raise ValueError("URL이 올바르지 않습니다")
-    hf = _hf_id(url)
-    if hf:
-        return {"type": "hf", "repo": hf[0], "file": hf[1], "url": url}
-    civ = _civitai_info(url)
-    if civ:
-        return {"type": civ["type"], "model_id": civ["model_id"], "url": url}
-    return {"type": "direct", "url": url}
-
-
-@router.get("/models/roots")
-def models_roots():
-    roots = []
-    model_root = settings.get("model_root")
-    if model_root and os.path.exists(model_root):
-        roots.append({"path": model_root, "label": "model_root (llama)"})
-    comfy = os.path.join(settings.get("comfyui_dir"), "models")
-    if comfy and os.path.exists(comfy):
-        roots.append({"path": comfy, "label": "ComfyUI/models"})
-    home = os.path.expanduser("~")
-    roots.append({"path": home, "label": "홈"})
-    for r in _roots():
-        if r not in [x["path"] for x in roots]:
-            roots.append({"path": r, "label": r})
-    return {"roots": roots}
-
-
-@router.get("/models/jobs")
-def models_jobs():
-    with LOCK:
-        jobs = sorted(JOBS.values(), key=lambda j: j["created"], reverse=True)
-    return {"jobs": jobs}
-
-
-@router.get("/models/parse")
-def models_parse(url: str):
+def _hf_inspect(source: dict[str, str]) -> dict[str, Any]:
     try:
-        return _parse_url(url)
-    except ValueError as e:
-        return {"error": str(e)}
-
-
-def _download_worker(job):
-    try:
-        info = _parse_url(job["url"])
-        dest_dir = job["dest_dir"]
-        os.makedirs(dest_dir, exist_ok=True)
-        if info["type"] == "hf":
-            _dl_hf(job, info)
-        elif info["type"] in ("civitai", "civitai-model", "direct"):
-            _dl_stream(job, info["url"])
-        if job["status"] in ("downloading", "queued"):
-            job["status"] = "done"
-    except Exception as e:
-        job["status"] = "error"
-        job["error"] = str(e)
-
-
-def _dl_hf(job, info):
-    try:
-        from huggingface_hub import HfApi, hf_hub_download
-    except ImportError:
-        job["status"] = "error"
-        job["error"] = "huggingface_hub 미설치 — pip install huggingface_hub"
-        return
-    api = HfApi()
-    repo, sub = info["repo"], info["file"]
-    if sub:
-        files = [sub]
-        job["filename"] = os.path.basename(sub)
-    else:
-        files = api.list_repo_files(repo)
-        job["filename"] = f"{repo} (리포 전체 {len(files)}개)"
-    total = len(files)
-    for i, fname in enumerate(files, 1):
-        if job["status"] == "cancelled":
-            job["status"] = "cancelled"
-            job["error"] = None
-            return
-        job["progress"] = i / total
-        job["status_text"] = f"[{i}/{total}] {fname}"
-        target = os.path.join(job["dest_dir"], fname)
-        try:
-            hf_hub_download(
-                repo_id=repo,
-                filename=fname,
-                local_dir=job["dest_dir"],
-                local_dir_use_symlinks=False,
-                resume_download=True,
-            )
-        except Exception as e:
-            job["error"] = f"{fname}: {e}"
-            job["status"] = "error"
-            return
-    job["done_bytes"] = total
-
-
-def _dl_stream(job, url):
-    import httpx
-
-    job["filename"] = os.path.basename(url.split("?")[0]) or "download"
-    target = os.path.join(job["dest_dir"], job["filename"])
-    tmp = target + ".part"
-    headers = {}
-    if "civitai" in url:
-        headers["User-Agent"] = "main_server/1.0"
-    resume = 0
-    if os.path.exists(tmp):
-        resume = os.path.getsize(tmp)
-        headers["Range"] = f"bytes={resume}-"
-    with httpx.stream("GET", url, headers=headers, timeout=None, follow_redirects=True) as r:
-        r.raise_for_status()
-        total = int(r.headers.get("content-length", 0))
-        if r.status_code == 206:
-            total += resume
-        job["total_bytes"] = total if total > resume else total
-        job["done_bytes"] = resume
-        job["status_text"] = "다운로드 중..."
-        last = time.time()
-        with open(tmp, "ab") as f:
-            for chunk in r.iter_bytes(65536):
-                if job["status"] == "cancelled":
-                    job["status"] = "cancelled"
-                    return
-                f.write(chunk)
-                job["done_bytes"] += len(chunk)
-                now = time.time()
-                if now - last > 0.5:
-                    last = now
-                    job["status_text"] = f"{_fmt(job['done_bytes'])} / {_fmt(job['total_bytes'])}"
-    os.replace(tmp, target)
-
-
-@router.post("/models/download")
-def models_download(url: str, dest_dir: str = ""):
-    dest_dir = dest_dir or settings.get("model_root")
-    if not os.path.isdir(dest_dir):
-        try:
-            os.makedirs(dest_dir, exist_ok=True)
-        except OSError:
-            raise FileNotFoundError(f"대상 폴더를 만들 수 없습니다: {dest_dir}")
-    job = {
-        "id": uuid.uuid4().hex[:8],
-        "url": url,
-        "display_url": _human_url(url),
-        "dest_dir": dest_dir,
-        "filename": None,
-        "status": "queued",
-        "status_text": "대기 중",
-        "total_bytes": None,
-        "done_bytes": 0,
-        "speed": None,
-        "eta": None,
-        "error": None,
-        "created": time.time(),
-        "progress": 0,
+        from huggingface_hub import HfApi
+        from huggingface_hub.hf_api import RepoFile
+    except ImportError as error:
+        raise RuntimeError("huggingface_hub 패키지가 필요합니다") from error
+    entries = HfApi().list_repo_tree(
+        source["repo"], recursive=True, expand=False, revision=source["revision"]
+    )
+    files = []
+    wanted = source.get("filename")
+    for entry in entries:
+        if not isinstance(entry, RepoFile):
+            continue
+        name = entry.path
+        if wanted and name != wanted:
+            continue
+        suffix = Path(name).suffix.lower()
+        files.append({
+            "name": name,
+            "size": entry.size,
+            "kind": suffix.lstrip(".") or "file",
+            "recommended": bool(wanted) or suffix in PRIMARY_MODEL_EXTENSIONS,
+        })
+        if len(files) >= MAX_INSPECT_FILES:
+            break
+    if wanted and not files:
+        raise ValueError(f"저장소에서 파일을 찾지 못했습니다: {wanted}")
+    if not files:
+        raise ValueError("저장소에 다운로드할 파일이 없습니다")
+    return {
+        "source": "huggingface",
+        "title": source["repo"],
+        "subtitle": f"revision: {source['revision']}",
+        "repo": source["repo"],
+        "revision": source["revision"],
+        "files": files,
+        "truncated": len(files) >= MAX_INSPECT_FILES,
     }
-    with LOCK:
+
+
+def _civitai_version_files(version: dict[str, Any], model_name: str = "") -> list[dict[str, Any]]:
+    files = []
+    version_files = version.get("files") or []
+    for item in version_files:
+        name = item.get("name") or f"civitai-{version.get('id')}.safetensors"
+        metadata = item.get("metadata") or {}
+        files.append({
+            "name": name,
+            "url": item.get("downloadUrl") or version.get("downloadUrl"),
+            "size": int(float(item.get("sizeKB") or 0) * 1024) or None,
+            "kind": metadata.get("format") or item.get("type") or "model",
+            "recommended": bool(item.get("primary")) or len(version_files) == 1,
+            "version": version.get("name"),
+            "model": model_name or (version.get("model") or {}).get("name"),
+            "virus_scan": item.get("virusScanResult"),
+            "pickle_scan": item.get("pickleScanResult"),
+        })
+    return files
+
+
+def _civitai_inspect(source: dict[str, str]) -> dict[str, Any]:
+    with httpx.Client(timeout=30, follow_redirects=True) as client:
+        if source.get("version_id"):
+            response = client.get(f"https://civitai.com/api/v1/model-versions/{source['version_id']}")
+            response.raise_for_status()
+            version = response.json()
+            model_name = (version.get("model") or {}).get("name") or f"Civitai {source['version_id']}"
+            files = _civitai_version_files(version, model_name)
+            subtitle = f"{version.get('name') or 'version'} · {version.get('baseModel') or 'base model unknown'}"
+        else:
+            response = client.get(f"https://civitai.com/api/v1/models/{source['model_id']}")
+            response.raise_for_status()
+            model = response.json()
+            model_name = model.get("name") or f"Civitai {source['model_id']}"
+            versions = model.get("modelVersions") or []
+            files = []
+            for version in versions:
+                files.extend(_civitai_version_files(version, model_name))
+            subtitle = f"{model.get('type') or 'model'} · {len(versions)} versions"
+    if not files:
+        raise ValueError("Civitai API에서 다운로드 가능한 파일을 찾지 못했습니다")
+    return {"source": "civitai", "title": model_name, "subtitle": subtitle, "files": files}
+
+
+def _filename_from_headers(response: httpx.Response, fallback_url: str) -> str:
+    disposition = response.headers.get("content-disposition", "")
+    match = re.search(r"filename\*=UTF-8''([^;]+)|filename=\"?([^\";]+)", disposition, re.I)
+    if match:
+        return Path(unquote(match.group(1) or match.group(2))).name
+    return Path(unquote(urlparse(str(response.url or fallback_url)).path)).name or "download.bin"
+
+
+def _direct_inspect(url: str) -> dict[str, Any]:
+    with httpx.Client(timeout=20, follow_redirects=True) as client:
+        response = client.head(url)
+        if response.status_code >= 400 or response.status_code == 405:
+            response = client.get(url, headers={"Range": "bytes=0-0"})
+        response.raise_for_status()
+        name = _filename_from_headers(response, url)
+        size = response.headers.get("content-range", "").rsplit("/", 1)[-1]
+        if not size.isdigit():
+            size = response.headers.get("content-length")
+        size = int(size) if str(size or "").isdigit() else None
+    return {
+        "source": "direct",
+        "title": name,
+        "subtitle": urlparse(url).hostname,
+        "files": [{
+            "name": name, "url": url, "size": size,
+            "kind": Path(name).suffix.lstrip(".") or "file", "recommended": True,
+        }],
+    }
+
+
+@router.get("/destinations")
+def destinations():
+    return {"destinations": _destination_items()}
+
+
+@router.post("/folders")
+def create_folder(request: FolderRequest):
+    parent = _assert_model_path(request.parent)
+    name = request.name.strip()
+    if not name or name in {".", ".."} or "/" in name or "\\" in name:
+        raise HTTPException(400, "폴더 이름이 올바르지 않습니다")
+    target = parent / name
+    try:
+        target.mkdir(exist_ok=False)
+    except FileExistsError as error:
+        raise HTTPException(409, "같은 이름의 폴더가 이미 있습니다") from error
+    return {"ok": True, "path": str(target)}
+
+
+@router.post("/inspect")
+def inspect_model(request: InspectRequest):
+    url = request.url.strip()
+    parsed = urlparse(url)
+    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+        raise HTTPException(400, "http 또는 https 모델 주소를 입력하세요")
+    try:
+        hf = _hf_source(url)
+        if hf:
+            return _hf_inspect(hf)
+        civitai = _civitai_source(url)
+        if civitai:
+            return _civitai_inspect(civitai)
+        return _direct_inspect(url)
+    except HTTPException:
+        raise
+    except Exception as error:
+        raise HTTPException(400, f"모델 정보를 가져오지 못했습니다: {error}") from error
+
+
+def _auth_headers(url: str) -> dict[str, str]:
+    headers = {"User-Agent": "main-server-model-hub/2.0"}
+    host = urlparse(url).hostname or ""
+    if host.endswith("huggingface.co"):
+        try:
+            from huggingface_hub import get_token
+            token = get_token()
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+        except Exception:
+            pass
+    elif host.endswith("civitai.com") and os.environ.get("CIVITAI_API_TOKEN"):
+        headers["Authorization"] = f"Bearer {os.environ['CIVITAI_API_TOKEN']}"
+    return headers
+
+
+def _hf_download_url(repo: str, revision: str, filename: str) -> str:
+    from huggingface_hub import hf_hub_url
+    return hf_hub_url(repo_id=repo, filename=filename, revision=revision)
+
+
+def _update_job(job: dict[str, Any]) -> None:
+    done = sum(item.get("done_bytes") or 0 for item in job["files"])
+    known = [item.get("total_bytes") for item in job["files"]]
+    job["done_bytes"] = done
+    job["total_bytes"] = sum(known) if known and all(value is not None for value in known) else None
+    elapsed = max(time.time() - job.get("transfer_started", time.time()), 0.001)
+    job["speed"] = int(done / elapsed)
+    if job["total_bytes"] and job["speed"]:
+        job["eta"] = max(0, int((job["total_bytes"] - done) / job["speed"]))
+
+
+def _stream_file(job: dict[str, Any], item: dict[str, Any], url: str, destination: Path) -> None:
+    relative = _safe_relative_file(item["name"])
+    target = destination / relative
+    target.parent.mkdir(parents=True, exist_ok=True)
+    partial = target.with_name(target.name + ".part")
+    resume = partial.stat().st_size if partial.exists() else 0
+    headers = _auth_headers(url)
+    if resume:
+        headers["Range"] = f"bytes={resume}-"
+    with httpx.stream("GET", url, headers=headers, timeout=None, follow_redirects=True) as response:
+        response.raise_for_status()
+        if response.status_code != 206:
+            resume = 0
+        actual_name = _filename_from_headers(response, url)
+        if "/" not in relative and actual_name and actual_name != "download.bin":
+            target = destination / Path(actual_name).name
+            partial = target.with_name(target.name + ".part")
+            resume = partial.stat().st_size if response.status_code == 206 and partial.exists() else 0
+        length = response.headers.get("content-length")
+        item["total_bytes"] = resume + int(length) if str(length or "").isdigit() else item.get("size")
+        item["done_bytes"] = resume
+        item["target"] = str(target)
+        mode = "ab" if response.status_code == 206 and resume else "wb"
+        with partial.open(mode) as output:
+            for chunk in response.iter_bytes(1024 * 1024):
+                if job["status"] == "cancelled":
+                    item["status"] = "cancelled"
+                    return
+                output.write(chunk)
+                item["done_bytes"] += len(chunk)
+                _update_job(job)
+        os.replace(partial, target)
+        item["status"] = "done"
+
+
+def _download_worker(job: dict[str, Any]) -> None:
+    job["status"] = "downloading"
+    job["transfer_started"] = time.time()
+    try:
+        for index, item in enumerate(job["files"], 1):
+            if job["status"] == "cancelled":
+                return
+            item["status"] = "downloading"
+            job["status_text"] = f"{index}/{len(job['files'])} · {item['name']}"
+            url = item.get("url")
+            if job["source"] == "huggingface":
+                url = _hf_download_url(job["repo"], job["revision"], item["name"])
+            if not url:
+                raise ValueError(f"다운로드 주소가 없습니다: {item['name']}")
+            _stream_file(job, item, url, _resolved(job["destination"]))
+        if job["status"] != "cancelled":
+            job["status"] = "done"
+            job["status_text"] = f"{len(job['files'])}개 파일 완료"
+            job["finished"] = time.time()
+    except Exception as error:
+        job["status"] = "error"
+        job["status_text"] = "다운로드 실패"
+        job["error"] = str(error)
+        job["finished"] = time.time()
+
+
+@router.post("/download")
+def start_download(request: DownloadRequest):
+    destination = _assert_model_path(request.destination)
+    files = []
+    for item in request.files:
+        try:
+            name = _safe_relative_file(item.name)
+        except ValueError as error:
+            raise HTTPException(400, str(error)) from error
+        files.append({
+            "name": name, "url": item.url, "size": item.size,
+            "total_bytes": item.size, "done_bytes": 0, "status": "queued",
+        })
+    job = {
+        "id": uuid.uuid4().hex[:10], "source": request.source,
+        "repo": request.repo, "revision": request.revision or "main",
+        "destination": str(destination), "files": files,
+        "status": "queued", "status_text": "대기 중",
+        "done_bytes": 0,
+        "total_bytes": sum(item.size or 0 for item in request.files) or None,
+        "speed": 0, "eta": None, "error": None, "created": time.time(),
+    }
+    with JOBS_LOCK:
         JOBS[job["id"]] = job
-        if len(JOBS) > MAX_JOBS:
-            for k in sorted(JOBS, key=lambda x: JOBS[x]["created"])[: len(JOBS) - MAX_JOBS]:
-                del JOBS[k]
-    threading.Thread(target=_download_worker, args=(job,), daemon=True).start()
+        for job_id in sorted(JOBS, key=lambda value: JOBS[value]["created"])[:-30]:
+            JOBS.pop(job_id, None)
+    threading.Thread(
+        target=_download_worker, args=(job,), name=f"model-download-{job['id']}", daemon=True
+    ).start()
     return {"ok": True, "job": job}
 
 
-@router.post("/models/cancel")
-def models_cancel(id: str):
-    with LOCK:
-        job = JOBS.get(id)
-    if job:
+@router.get("/jobs")
+def list_jobs():
+    with JOBS_LOCK:
+        jobs = sorted(JOBS.values(), key=lambda item: item["created"], reverse=True)
+    return {"jobs": jobs}
+
+
+@router.post("/jobs/{job_id}/cancel")
+def cancel_job(job_id: str):
+    with JOBS_LOCK:
+        job = JOBS.get(job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾지 못했습니다")
+    if job["status"] in {"queued", "downloading"}:
         job["status"] = "cancelled"
-        job["status_text"] = "취소됨"
-    return {"ok": True}
+        job["status_text"] = "취소됨 (부분 파일은 재개용으로 유지)"
+    return {"ok": True, "job": job}
+
+
+@router.get("/installed")
+def installed_models(root: str = "", query: str = ""):
+    roots = _base_roots()
+    if not roots:
+        raise HTTPException(400, "사용 가능한 모델 루트가 없습니다")
+    selected = _assert_model_path(root or roots[0]["path"])
+    needle = query.strip().lower()
+    files = []
+    try:
+        for path in selected.rglob("*"):
+            if not path.is_file() or path.name.endswith(".part") or ".cache" in path.parts:
+                continue
+            if path.suffix.lower() not in PRIMARY_MODEL_EXTENSIONS:
+                continue
+            relative = str(path.relative_to(selected))
+            if needle and needle not in relative.lower():
+                continue
+            stat = path.stat()
+            files.append({
+                "name": path.name, "relative": relative, "path": str(path),
+                "size": stat.st_size, "mtime": int(stat.st_mtime),
+                "kind": path.suffix.lstrip(".").upper(),
+            })
+            if len(files) >= MAX_INSTALLED_FILES:
+                break
+    except OSError as error:
+        raise HTTPException(400, f"모델 폴더를 읽지 못했습니다: {error}") from error
+    files.sort(key=lambda item: item["mtime"], reverse=True)
+    return {"root": str(selected), "files": files, "truncated": len(files) >= MAX_INSTALLED_FILES}

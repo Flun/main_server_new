@@ -304,11 +304,19 @@ def _build_llama_cmd(preset):
         ("-t", "threads"),
         ("-ctk", "cacheK"),
         ("-ctv", "cacheV"),
-        ("--sleep-idle-seconds", "sleepIdleSeconds"),
     ):
         v = str(preset.get(key, "")).strip()
         if v:
             cmd += [flag, v]
+    sleep_idle = str(preset.get("sleepIdleSeconds", "")).strip()
+    if sleep_idle:
+        try:
+            sleep_idle_value = int(sleep_idle)
+        except ValueError as error:
+            raise HTTPException(400, "sleep-idle-seconds는 -1 이상의 정수여야 합니다") from error
+        if sleep_idle_value < -1:
+            raise HTTPException(400, "sleep-idle-seconds는 -1 이상의 정수여야 합니다")
+        cmd += ["--sleep-idle-seconds", str(sleep_idle_value)]
     cmd += ["--port", str(LLAMA_BACKEND_PORT)]
     reasoning_mode = str(preset.get("reasoningMode", "")).strip()
     if reasoning_mode in {"on", "off"}:
@@ -317,10 +325,17 @@ def _build_llama_cmd(preset):
     if reasoning_mode != "off" and reasoning_budget:
         cmd += ["--reasoning-budget", reasoning_budget]
     fit_target = str(preset.get("fitTarget", "")).strip()
-    if preset.get("fit"):
+    # llama.cpp에는 --fit과 idle sleep을 함께 사용할 때 재기동 과정에서
+    # 이미 계산된 tensor override를 다시 적용하며 실패하는 알려진 문제가 있습니다.
+    # sleep을 선택한 경우 고정된 ctx/ngl 설정을 우선해 fit을 끕니다.
+    sleep_enabled = bool(sleep_idle) and int(sleep_idle) >= 0
+    if preset.get("fit") and not sleep_enabled:
         cmd += ["--fit", "on"]
         if fit_target:
             cmd += ["--fit-target", fit_target]
+    else:
+        # Current llama.cpp defaults --fit to on, so omission is not enough.
+        cmd += ["--fit", "off"]
     spec_type = str(preset.get("specType", "")).strip()
     if spec_type:
         cmd += ["--spec-type", spec_type]
@@ -621,14 +636,65 @@ def llama_presets_save(presets: dict):
     return {"ok": True, "presets": load_presets()}
 
 
+def _release_comfy_vram_before_llama_start():
+    """Apply the same cleanup policy before the initial llama model load.
+
+    The public guard protects wake-up inference, but llama-server also loads a
+    model once during process startup. That first load needs the same protection.
+    """
+    if not load_llama_settings().get("vram_cleanup_enabled"):
+        return {"comfy_online": None, "released": False}
+    comfy_url = f"http://127.0.0.1:{int(settings.get('comfyui_port') or 8188)}"
+    try:
+        response = requests.get(f"{comfy_url}/queue", timeout=3)
+        response.raise_for_status()
+    except requests.RequestException:
+        return {"comfy_online": False, "released": False}
+    while True:
+        try:
+            queue = response.json()
+        except ValueError as error:
+            raise HTTPException(503, "ComfyUI 큐 상태를 해석하지 못해 llama 시작을 중단했습니다") from error
+        if not (queue.get("queue_running") or []) and not (queue.get("queue_pending") or []):
+            break
+        time.sleep(2)
+        try:
+            response = requests.get(f"{comfy_url}/queue", timeout=5)
+            response.raise_for_status()
+        except requests.RequestException as error:
+            raise HTTPException(503, "ComfyUI 작업 대기 중 연결이 끊겨 llama 시작을 중단했습니다") from error
+    try:
+        released = requests.post(
+            f"{comfy_url}/free",
+            json={"unload_models": True, "free_memory": True},
+            timeout=30,
+        )
+        released.raise_for_status()
+    except requests.RequestException as error:
+        raise HTTPException(503, "ComfyUI VRAM 정리에 실패해 llama 시작을 중단했습니다") from error
+    return {"comfy_online": True, "released": True}
+
+
 @app.post("/api/llama/start")
 def llama_start(preset: dict):
-    cmd = _build_llama_cmd(preset)
-    devices = normalize_gpu_devices(preset.get("gpuDevices") or preset.get("device") or [])
+    effective = dict(preset)
+    warnings = []
+    try:
+        sleep_enabled = int(str(effective.get("sleepIdleSeconds", "-1") or "-1")) >= 0
+    except ValueError:
+        sleep_enabled = False
+    if sleep_enabled and effective.get("fit"):
+        effective["fit"] = False
+        warnings.append("VRAM Auto-Unload와 --fit의 llama.cpp 재로딩 충돌을 피하기 위해 --fit을 자동으로 껐습니다.")
+    cleanup = _release_comfy_vram_before_llama_start()
+    if cleanup.get("released"):
+        warnings.append("llama 시작 전에 ComfyUI 모델과 캐시를 정리했습니다.")
+    cmd = _build_llama_cmd(effective)
+    devices = normalize_gpu_devices(effective.get("gpuDevices") or effective.get("device") or [])
     pid = services["llama"].start(cmd, device=devices or None)
     _write_json(
         LAST_RUN_FILE,
-        {"version": _resolve_llama_binary(preset)[1] or "", **preset, "gpuDevices": devices, "device": ""},
+        {"version": _resolve_llama_binary(effective)[1] or "", **effective, "gpuDevices": devices, "device": ""},
     )
     return {
         "ok": True,
@@ -637,6 +703,7 @@ def llama_start(preset: dict):
         "public_url": f"http://127.0.0.1:{LLAMA_PUBLIC_PORT}",
         "backend_url": f"http://127.0.0.1:{LLAMA_BACKEND_PORT}",
         "gpu_devices": devices,
+        "warnings": warnings,
     }
 
 

@@ -530,8 +530,9 @@
                             </div>
                             <div class="flex flex-col">
                                 <label class="text-[11px] font-medium text-indigo-400 mb-1.5" title="Idle 후 모델을 메모리에서 언로드합니다. 1 = 추론 종료 1초 후 언로드">VRAM Auto-Unload (--sleep-idle-seconds)</label>
-                                <input type="number" min="-1" v-model="config.sleepIdleSeconds" class="input-base text-xs" placeholder="-1 (Disabled)">
+                                <input type="number" min="-1" step="1" v-model="config.sleepIdleSeconds" @change="normalizeSleepFit" class="input-base text-xs" placeholder="-1 (Disabled)">
                                 <span class="mt-1 text-[10px] text-zinc-600">-1 비활성 · 30–120 권장 · 1은 요청 직후 거의 즉시 언로드</span>
+                                <span v-if="sleepIdleEnabled" class="mt-1 text-[10px] text-amber-400">llama.cpp 재로딩 충돌 방지를 위해 --fit은 함께 사용하지 않습니다.</span>
                             </div>
                         </div>
 
@@ -601,8 +602,8 @@
 
                         <!-- Checkboxes -->
                         <div class="flex flex-wrap items-center gap-5 mt-5 pt-4 border-t border-zinc-800">
-                            <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group">
-                                <input type="checkbox" v-model="config.fit" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 transition"> 
+                            <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group" :class="sleepIdleEnabled && 'opacity-40'">
+                                <input type="checkbox" v-model="config.fit" :disabled="sleepIdleEnabled" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 transition">
                                 <span class="font-mono text-xs">--fit on</span>
                             </label>
                             <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group">
@@ -961,6 +962,10 @@
                 };
             },
             computed: {
+                sleepIdleEnabled() {
+                    const value = Number(this.config.sleepIdleSeconds);
+                    return this.config.sleepIdleSeconds !== '' && Number.isInteger(value) && value >= 0;
+                },
                 availableOptionalArgs() { return this.optionalArgDefs.filter(item => !Object.prototype.hasOwnProperty.call(this.config.optionalArgs || {}, item.key)); },
                 activeOptionalArgs() { return this.optionalArgDefs.filter(item => Object.prototype.hasOwnProperty.call(this.config.optionalArgs || {}, item.key)); },
                 computedCommand() {
@@ -979,7 +984,8 @@
                     if (this.config.parallel && this.config.parallel !== "1") cmd.push(`-np ${this.config.parallel}`);
                     if (this.config.threads && this.config.threads !== "") cmd.push(`-t ${this.config.threads}`);
 
-                    if (this.config.fit) { cmd.push(`--fit on`); if (this.config.fitTarget) cmd.push(`--fit-target ${this.config.fitTarget}`); }
+                    if (this.config.fit && !this.sleepIdleEnabled) { cmd.push(`--fit on`); if (this.config.fitTarget) cmd.push(`--fit-target ${this.config.fitTarget}`); }
+                    else cmd.push(`--fit off`);
                     if (this.config.flash) cmd.push(`--flash-attn on`);
                     if (this.config.cacheK) cmd.push(`--cache-type-k ${this.config.cacheK}`);
                     if (this.config.cacheV) cmd.push(`--cache-type-v ${this.config.cacheV}`);
@@ -1059,6 +1065,10 @@
                         alert('--cpu-moe와 --n-cpu-moe는 동시에 사용할 수 없습니다.'); return false;
                     }
                     return true;
+                },
+                normalizeSleepFit() {
+                    const value = Number(this.config.sleepIdleSeconds);
+                    if (this.config.sleepIdleSeconds !== '' && Number.isInteger(value) && value >= 0) this.config.fit = false;
                 },
 
                 async fetchGpuTopology() {
@@ -1351,6 +1361,11 @@
                             body: JSON.stringify(this.config)
                         });
                         if (!res.ok) throw new Error(await res.text());
+                        const data = await res.json();
+                        if ((data.warnings || []).length) {
+                            this.config.fit = !data.warnings.some(item => item.includes('--fit')) && this.config.fit;
+                            alert(data.warnings.join('\n'));
+                        }
                         setTimeout(async () => {
                             await this.fetchStatus();
                             this.loading.llamacpp = false;
@@ -1574,6 +1589,7 @@
                 loadPreset() {
                     if (this.selectedPreset && this.presets[this.selectedPreset]) {
                         this.config = { ...this.config, ...this.presets[this.selectedPreset] };
+                        this.normalizeSleepFit();
                     }
                 },
                 
@@ -1600,6 +1616,7 @@
                             if(this.config.specDraftDevice === undefined) this.config.specDraftDevice = "";
                             if(!this.config.optionalArgs || typeof this.config.optionalArgs !== 'object') this.config.optionalArgs = {};
                             if(!Array.isArray(this.config.gpuDevices)) this.config.gpuDevices = this.config.device ? [this.config.device] : [];
+                            this.normalizeSleepFit();
                         }
                     } catch (e) {}
                 }

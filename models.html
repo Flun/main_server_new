@@ -3,229 +3,175 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Model Hub</title>
+<title>Model Hub · AI Infrastructure Console</title>
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
 <style>
-  body { background:#0b0f17; color:#e5e7eb; font-family: system-ui, sans-serif; }
-  .card { background:#131a26; border:1px solid #1f2937; border-radius:12px; }
-  .btn { padding:6px 12px; border-radius:8px; font-size:13px; font-weight:600; cursor:pointer; transition:.15s; border:none; }
-  .btn:disabled { opacity:.4; cursor:not-allowed; }
-  .mono { font-family: ui-monospace, monospace; }
-  input,select,textarea { background:#0b0f17; border:1px solid #2a3444; border-radius:8px; padding:6px 10px; font-size:13px; color:#e5e7eb; }
-  .tab { padding:8px 16px; border-radius:8px; cursor:pointer; font-weight:600; font-size:14px; }
-  .tab.active { background:#b45309; color:#fff; }
-  .tab:not(.active) { background:#1f2937; color:#9ca3af; }
-  .tab:not(.active):hover { background:#374151; }
-  ::-webkit-scrollbar { width:8px; }
-  ::-webkit-scrollbar-thumb { background:#334155; border-radius:4px; }
+  [v-cloak] { display:none; }
+  body { background:#09090b; color:#e4e4e7; font-family:Inter,ui-sans-serif,system-ui,sans-serif; }
+  .panel { background:rgba(24,24,27,.82); border:1px solid #27272a; border-radius:16px; }
+  .input { width:100%; border:1px solid #3f3f46; border-radius:10px; background:#09090b; color:#f4f4f5; padding:.7rem .8rem; outline:none; }
+  .input:focus { border-color:#6366f1; box-shadow:0 0 0 3px rgba(99,102,241,.13); }
+  .button { border-radius:10px; padding:.65rem 1rem; font-size:.82rem; font-weight:650; transition:.15s; }
+  .button:disabled { cursor:not-allowed; opacity:.4; }
+  .primary { background:#4f46e5; color:white; }
+  .primary:hover:not(:disabled) { background:#6366f1; }
+  .muted { background:#27272a; color:#d4d4d8; border:1px solid #3f3f46; }
+  .muted:hover:not(:disabled) { background:#3f3f46; }
+  .danger { background:rgba(159,18,57,.28); border:1px solid rgba(244,63,94,.35); color:#fda4af; }
+  .mono { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+  ::-webkit-scrollbar { width:8px; height:8px; }
+  ::-webkit-scrollbar-thumb { background:#3f3f46; border-radius:10px; }
 </style>
 </head>
 <body>
-<div id="app" v-cloak class="max-w-7xl mx-auto p-4 space-y-4">
-
-  <div class="flex items-center justify-between">
-    <div class="flex items-center gap-3">
-      <h1 class="text-xl font-bold">Model Hub</h1>
-      <span class="text-xs px-2 py-1 rounded bg-amber-900/60 text-amber-300 mono">AI Server Manager</span>
+<div id="app" v-cloak class="mx-auto min-h-screen max-w-[1500px] px-4 py-5 md:px-7">
+  <header class="mb-6 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <div class="mb-1 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-[.2em] text-indigo-400">
+        <span class="h-2 w-2 rounded-full bg-indigo-400"></span> AI Infrastructure Console
+      </div>
+      <h1 class="text-2xl font-semibold tracking-tight text-zinc-50">Model Hub</h1>
+      <p class="mt-1 text-sm text-zinc-500">링크 확인 → 파일 선택 → 모델 폴더 설치</p>
     </div>
-    <a href="/" class="btn bg-gray-700 hover:bg-gray-600">← 대시보드</a>
+    <div class="flex items-center gap-2">
+      <button class="button muted" @click="activeView='installed'; loadInstalled()">설치된 모델</button>
+      <a href="/" class="button muted no-underline">← 대시보드</a>
+    </div>
+  </header>
+
+  <div class="mb-5 flex w-fit rounded-xl border border-zinc-800 bg-zinc-900 p-1">
+    <button class="rounded-lg px-4 py-2 text-sm" :class="activeView==='download' ? 'bg-indigo-600 text-white' : 'text-zinc-500'" @click="activeView='download'">다운로드</button>
+    <button class="rounded-lg px-4 py-2 text-sm" :class="activeView==='installed' ? 'bg-indigo-600 text-white' : 'text-zinc-500'" @click="activeView='installed'; loadInstalled()">설치됨</button>
   </div>
 
-  <div class="flex gap-2">
-    <div class="tab" :class="{active: tab===1}" @click="tab=1">⚙️ 설치 경로</div>
-    <div class="tab" :class="{active: tab===2}" @click="tab=2">⬇️ 모델 다운로드</div>
-    <div class="tab" :class="{active: tab===3}" @click="tab=3">🗂️ 파일 탐색기</div>
-  </div>
-
-  <!-- 탭1: 경로 설정 -->
-  <div v-if="tab===1" class="card p-4">
-    <div class="flex justify-between items-center mb-3">
-      <h2 class="font-semibold text-gray-300">설치 경로 설정 (linux_settings.json)</h2>
-      <div class="flex gap-2">
-        <button class="btn bg-gray-700 hover:bg-gray-600" @click="loadSettings()">새로고침</button>
-        <button class="btn bg-amber-600 hover:bg-amber-500" @click="saveSettings()">저장</button>
-      </div>
-    </div>
-    <div class="text-xs text-gray-500 mb-3">저장 후 서버가 즉시 새 경로로 재로드됩니다. ComfyUI / llama / 모델 루트 / 봇 / 와처 경로.</div>
-    <div class="grid grid-cols-1 md:grid-cols-2 gap-2">
-      <div v-for="(v,k) in settings" :key="k" class="flex items-center gap-2">
-        <label class="text-xs text-gray-400 w-44 mono">{{ k }}</label>
-        <input v-model="settings[k]" :type="k==='autostart'?'checkbox':'text'" class="flex-1">
-      </div>
-    </div>
-  </div>
-
-  <!-- 탭2: 모델 다운로드 -->
-  <div v-if="tab===2" class="space-y-4">
-    <div class="card p-4">
-      <h2 class="font-semibold text-gray-300 mb-2">모델 다운로드</h2>
-      <div class="text-xs text-gray-500 mb-3">HuggingFace 리포/파일, Civitai, 직접 URL 지원 · 진행률/취소/작업 최대 20개</div>
-      <div class="flex gap-2">
-        <input v-model="dlUrl" placeholder="https://huggingface.co/org/repo  |  https://civitai.com/...  |  https://..." class="flex-1">
-        <input v-model="dlDir" placeholder="대상 폴더 (비우면 model_root)" class="w-72 mono">
-        <button class="btn bg-amber-600 hover:bg-amber-500" @click="parseUrl()">확인</button>
-        <button class="btn bg-emerald-700 hover:bg-emerald-600" @click="startDl()">다운로드</button>
-      </div>
-      <div v-if="parsed" class="text-xs mono text-gray-400 mt-2 bg-[#0b0f17] border border-gray-800 rounded p-2">{{ JSON.stringify(parsed) }}</div>
-    </div>
-
-    <div class="card p-4">
-      <h2 class="font-semibold text-gray-300 mb-3">작업 대기열</h2>
-      <div v-if="!jobs.length" class="text-sm text-gray-500 text-center py-4">작업 없음</div>
-      <div v-for="j in jobs" :key="j.id" class="mb-3 p-3 rounded-lg bg-[#0b0f17] border border-gray-800">
-        <div class="flex justify-between text-sm mb-1">
-          <span class="text-xs text-gray-400 mono break-all flex-1 pr-2">{{ j.display_url }}</span>
-          <span class="text-xs px-2 py-0.5 rounded mono"
-            :class="statusCls(j.status)">{{ statusLabel(j) }}</span>
+  <main v-if="activeView==='download'" class="space-y-5">
+    <section class="panel overflow-hidden">
+      <div class="border-b border-zinc-800 px-5 py-4">
+        <div class="flex items-center gap-3">
+          <span class="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-500/15 text-xs font-bold text-indigo-300">1</span>
+          <div><h2 class="font-semibold">모델 링크 확인</h2><p class="text-xs text-zinc-500">Hugging Face 저장소/파일, Civitai 모델/버전, 직접 파일 URL</p></div>
         </div>
-        <div v-if="j.filename" class="text-xs text-gray-500 mono mb-1">→ {{ j.filename }} <span class="text-gray-600">(@ {{ j.dest_dir }})</span></div>
-        <div class="flex items-center gap-2">
-          <div class="flex-1 h-3 rounded bg-gray-800 overflow-hidden">
-            <div class="h-full bg-amber-500" :style="{width: pct(j)+'%'}"></div>
+      </div>
+      <form class="flex flex-col gap-3 p-5 lg:flex-row" @submit.prevent="inspectUrl">
+        <input v-model.trim="url" class="input flex-1 mono text-sm" placeholder="https://huggingface.co/owner/repo 또는 모델 파일 URL" autocomplete="off">
+        <button class="button primary min-w-32" :disabled="inspecting || !url">
+          {{ inspecting ? '확인 중…' : '파일 불러오기' }}
+        </button>
+      </form>
+      <div v-if="error" class="mx-5 mb-5 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-300">{{ error }}</div>
+    </section>
+
+    <div v-if="inspection" class="grid gap-5 xl:grid-cols-[minmax(0,1.55fr)_minmax(340px,.7fr)]">
+      <section class="panel min-w-0 overflow-hidden">
+        <div class="flex flex-wrap items-center justify-between gap-3 border-b border-zinc-800 px-5 py-4">
+          <div class="min-w-0">
+            <div class="flex items-center gap-2"><span class="rounded bg-zinc-800 px-2 py-1 text-[10px] font-bold uppercase text-zinc-400">{{ inspection.source }}</span><h2 class="truncate font-semibold">{{ inspection.title }}</h2></div>
+            <p class="mt-1 text-xs text-zinc-500">{{ inspection.subtitle }} · {{ inspection.files.length }}개 파일</p>
           </div>
-          <span class="text-[11px] text-gray-400 mono w-36 text-right">{{ statusText(j) }}</span>
-          <button v-if="['queued','downloading'].includes(j.status)" class="btn bg-red-700 hover:bg-red-600 !py-1 text-xs" @click="cancelDl(j.id)">취소</button>
+          <div class="flex gap-2"><button class="button muted !px-3 !py-2" @click="selectRecommended">모델 파일 선택</button><button class="button muted !px-3 !py-2" @click="toggleAll">전체 토글</button></div>
         </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- 탭3: 파일 탐색기 -->
-  <div v-if="tab===3" class="card p-4">
-    <div class="flex justify-between items-center mb-3">
-      <h2 class="font-semibold text-gray-300">파일 탐색기</h2>
-      <div class="flex gap-2">
-        <input v-model="newFolder" placeholder="새 폴더 이름" class="w-44">
-        <button class="btn bg-gray-700 hover:bg-gray-600" @click="mkDir()">새 폴더</button>
-        <label class="btn bg-gray-700 hover:bg-gray-600 cursor-pointer">업로드
-          <input type="file" class="hidden" @change="upload($event)">
-        </label>
-      </div>
-    </div>
-    <div class="flex items-center gap-2 text-xs mb-3">
-      <button class="btn bg-gray-700 hover:bg-gray-600" @click="goRoot()">루트</button>
-      <button v-if="fs.path" class="btn bg-gray-700 hover:bg-gray-600" @click="go(fs.parent)">← 상위</button>
-      <span class="mono text-gray-400">{{ fs.path }}</span>
-    </div>
-    <div class="flex flex-wrap gap-2 mb-3">
-      <button v-for="r in roots" :key="r.path" class="btn bg-[#0b0f17] border border-gray-700 hover:border-gray-500 !text-xs mono"
-        @click="go(r.path)">{{ r.path }}</button>
-    </div>
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 max-h-[50vh] overflow-auto">
-      <div v-for="e in fs.entries" :key="e.path"
-        class="flex items-center gap-2 p-2 rounded bg-[#0b0f17] border border-gray-800 text-sm cursor-pointer hover:border-gray-600"
-        @dblclick="e.is_dir && go(e.path)">
-        <span>{{ e.is_dir ? '📁' : '📄' }}</span>
-        <span class="flex-1 truncate" :title="e.path">{{ e.name }}</span>
-        <span class="text-[11px] text-gray-500 mono">{{ fmtSize(e.size) }}</span>
-        <div class="flex gap-1" @click.stop>
-          <button class="btn bg-gray-800 hover:bg-gray-700 !py-0.5 text-xs" @click="go(e.path)" v-if="e.is_dir">열기</button>
-          <a v-else :href="'/api/fs/download?path='+encodeURIComponent(e.path)" class="btn bg-gray-800 hover:bg-gray-700 !py-0.5 text-xs no-underline">받기</a>
-          <button class="btn bg-gray-800 hover:bg-gray-700 !py-0.5 text-xs" @click="rename(e)">이름</button>
-          <button class="btn bg-red-900/60 hover:bg-red-800 !py-0.5 text-xs" @click="del(e)">삭제</button>
+        <div class="border-b border-zinc-800 bg-zinc-950/40 px-5 py-3">
+          <input v-model="fileQuery" class="input !py-2 text-sm" placeholder="파일명 필터">
         </div>
-      </div>
-      <div v-if="!fs.entries?.length" class="text-sm text-gray-500 text-center col-span-full py-6">(비어 있음)</div>
-    </div>
-  </div>
+        <div class="max-h-[520px] divide-y divide-zinc-800 overflow-auto">
+          <label v-for="file in filteredFiles" :key="file.name + (file.version || '')" class="flex cursor-pointer items-start gap-3 px-5 py-3 hover:bg-zinc-800/35">
+            <input type="checkbox" :value="fileKey(file)" v-model="selectedFiles" class="mt-1 h-4 w-4 accent-indigo-500">
+            <div class="min-w-0 flex-1">
+              <div class="flex flex-wrap items-center gap-2">
+                <span class="break-all mono text-xs text-zinc-200">{{ file.name }}</span>
+                <span v-if="file.recommended" class="rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-400">추천</span>
+                <span v-if="file.version" class="rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] text-zinc-500">{{ file.version }}</span>
+              </div>
+              <div class="mt-1 flex flex-wrap gap-3 text-[11px] text-zinc-500"><span>{{ formatBytes(file.size) }}</span><span>{{ file.kind }}</span><span v-if="file.virus_scan">Virus: {{ file.virus_scan }}</span><span v-if="file.pickle_scan">Pickle: {{ file.pickle_scan }}</span></div>
+            </div>
+          </label>
+          <div v-if="!filteredFiles.length" class="px-5 py-12 text-center text-sm text-zinc-600">조건에 맞는 파일이 없습니다.</div>
+        </div>
+        <div class="flex items-center justify-between border-t border-zinc-800 px-5 py-3 text-xs text-zinc-500"><span>{{ selectedFiles.length }}개 선택</span><span>합계 {{ formatBytes(selectedSize) }}</span></div>
+      </section>
 
+      <aside class="panel h-fit overflow-hidden xl:sticky xl:top-5">
+        <div class="border-b border-zinc-800 px-5 py-4"><div class="flex items-center gap-3"><span class="flex h-7 w-7 items-center justify-center rounded-full bg-indigo-500/15 text-xs font-bold text-indigo-300">2</span><div><h2 class="font-semibold">설치 위치</h2><p class="text-xs text-zinc-500">허용된 모델 폴더만 표시됩니다.</p></div></div></div>
+        <div class="space-y-4 p-5">
+          <select v-model="destination" class="input text-sm"><option value="" disabled>대상 폴더 선택</option><option v-for="item in destinations" :key="item.path" :value="item.path">{{ item.label }} · {{ formatBytes(item.free_bytes) }} 여유</option></select>
+          <div v-if="destination" class="break-all rounded-lg border border-zinc-800 bg-zinc-950 p-3 mono text-[11px] text-zinc-500">{{ destination }}</div>
+          <div class="flex gap-2"><input v-model.trim="newFolder" class="input !py-2 text-sm" placeholder="하위 폴더 추가"><button class="button muted shrink-0 !py-2" :disabled="!destination || !newFolder" @click="createFolder">생성</button></div>
+          <button class="button primary w-full" :disabled="!destination || !selectedFiles.length || starting" @click="startDownload">{{ starting ? '작업 생성 중…' : selectedFiles.length + '개 파일 다운로드' }}</button>
+          <p class="text-[11px] leading-relaxed text-zinc-600">같은 <span class="mono">.part</span> 파일이 있으면 이어받습니다. 비공개 Hugging Face 모델은 로컬에 저장된 HF 토큰을 사용합니다.</p>
+        </div>
+      </aside>
+    </div>
+
+    <section class="panel overflow-hidden">
+      <div class="flex items-center justify-between border-b border-zinc-800 px-5 py-4"><div><h2 class="font-semibold">다운로드 작업</h2><p class="text-xs text-zinc-500">실시간 전송량과 파일별 상태</p></div><button class="button muted !px-3 !py-2" @click="loadJobs">새로고침</button></div>
+      <div v-if="!jobs.length" class="py-14 text-center text-sm text-zinc-600">아직 다운로드 작업이 없습니다.</div>
+      <div v-else class="divide-y divide-zinc-800">
+        <article v-for="job in jobs" :key="job.id" class="p-5">
+          <div class="mb-3 flex flex-wrap items-start justify-between gap-3">
+            <div class="min-w-0"><div class="flex items-center gap-2"><span class="rounded px-2 py-1 text-[10px] font-bold uppercase" :class="statusClass(job.status)">{{ statusLabel(job.status) }}</span><span class="mono text-xs text-zinc-500">#{{ job.id }}</span></div><p class="mt-2 break-all mono text-xs text-zinc-400">{{ job.status_text }}</p><p class="mt-1 break-all text-[11px] text-zinc-600">{{ job.destination }}</p></div>
+            <button v-if="['queued','downloading'].includes(job.status)" class="button danger !px-3 !py-2" @click="cancelJob(job.id)">취소</button>
+          </div>
+          <div class="h-2 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full transition-all" :class="job.status==='error' ? 'bg-rose-500' : 'bg-indigo-500'" :style="{width: jobPercent(job)+'%'}"></div></div>
+          <div class="mt-2 flex flex-wrap justify-between gap-2 text-[11px] text-zinc-500"><span>{{ formatBytes(job.done_bytes) }} / {{ formatBytes(job.total_bytes) }}</span><span>{{ formatBytes(job.speed) }}/s <template v-if="job.eta !== null">· {{ formatDuration(job.eta) }} 남음</template></span></div>
+          <div v-if="job.error" class="mt-3 rounded-lg bg-rose-500/10 px-3 py-2 text-xs text-rose-300">{{ job.error }}</div>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <main v-else class="panel overflow-hidden">
+    <div class="flex flex-col gap-3 border-b border-zinc-800 px-5 py-4 lg:flex-row lg:items-center lg:justify-between">
+      <div><h2 class="font-semibold">설치된 모델</h2><p class="text-xs text-zinc-500">모델 루트에서 최근 수정된 파일부터 표시합니다.</p></div>
+      <div class="flex flex-col gap-2 sm:flex-row"><select v-model="installedRoot" class="input min-w-72 text-sm" @change="loadInstalled"><option v-for="item in rootDestinations" :key="item.path" :value="item.path">{{ item.label }}</option></select><input v-model="installedQuery" class="input text-sm" placeholder="파일명 검색" @keyup.enter="loadInstalled"><button class="button muted" @click="loadInstalled">검색</button></div>
+    </div>
+    <div v-if="installedLoading" class="py-16 text-center text-sm text-zinc-500">모델 목록을 읽는 중…</div>
+    <div v-else-if="!installedFiles.length" class="py-16 text-center text-sm text-zinc-600">표시할 모델 파일이 없습니다.</div>
+    <div v-else class="divide-y divide-zinc-800">
+      <div v-for="file in installedFiles" :key="file.path" class="grid gap-2 px-5 py-3 sm:grid-cols-[90px_minmax(0,1fr)_120px_160px] sm:items-center">
+        <span class="w-fit rounded bg-zinc-800 px-2 py-1 text-[10px] font-bold text-indigo-300">{{ file.kind }}</span>
+        <div class="min-w-0"><div class="truncate text-sm text-zinc-200" :title="file.path">{{ file.name }}</div><div class="truncate mono text-[11px] text-zinc-600">{{ file.relative }}</div></div>
+        <span class="mono text-xs text-zinc-500">{{ formatBytes(file.size) }}</span><span class="text-xs text-zinc-600">{{ formatDate(file.mtime) }}</span>
+      </div>
+    </div>
+  </main>
 </div>
 
 <script>
 const { createApp } = Vue;
 createApp({
-  data() {
-    return {
-      tab: 2,
-      settings: {}, platform: '',
-      dlUrl: '', dlDir: '', parsed: null, jobs: [],
-      roots: [], fs: { path: '', parent: '/', entries: [] },
-      newFolder: '',
-      timer: null,
-    };
+  data() { return {
+    activeView:'download', url:'', inspecting:false, inspection:null, error:'', fileQuery:'', selectedFiles:[],
+    destinations:[], destination:'', newFolder:'', starting:false, jobs:[], timer:null,
+    installedRoot:'', installedQuery:'', installedFiles:[], installedLoading:false,
+  }; },
+  computed: {
+    filteredFiles() { const q=this.fileQuery.trim().toLowerCase(); return !q ? (this.inspection?.files||[]) : this.inspection.files.filter(f => `${f.name} ${f.version||''} ${f.kind||''}`.toLowerCase().includes(q)); },
+    selectedObjects() { const keys=new Set(this.selectedFiles); return (this.inspection?.files||[]).filter(f => keys.has(this.fileKey(f))); },
+    selectedSize() { const values=this.selectedObjects.map(f=>f.size); return values.length && values.every(v=>Number.isFinite(v)) ? values.reduce((a,b)=>a+b,0) : null; },
+    rootDestinations() { const seen=new Set(); return this.destinations.filter(item => { if(seen.has(item.root)) return false; seen.add(item.root); return true; }); },
   },
   methods: {
-    async api(path, opts) {
-      const r = await fetch(path, opts);
-      if (!r.ok) { const t = await r.text().catch(()=>''); throw new Error(t || r.status); }
-      return r.json();
-    },
-    async loadSettings() {
-      const s = await this.api('/api/linux-settings');
-      this.settings = Object.assign({}, s.effective || s.settings || {});
-      this.platform = s.platform;
-    },
-    async saveSettings() {
-      await this.api('/api/linux-settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(this.settings) });
-      alert('저장 완료');
-    },
-    async parseUrl() { try { this.parsed = await this.api('/api/models/parse?url='+encodeURIComponent(this.dlUrl)); } catch(e) { this.parsed = {error:String(e)}; } },
-    async startDl() {
-      if (!this.dlUrl) return;
-      const q = new URLSearchParams({ url: this.dlUrl });
-      if (this.dlDir) q.set('dest_dir', this.dlDir);
-      await this.api('/api/models/download?'+q.toString(), { method:'POST' });
-      this.dlUrl = '';
-    },
-    async refreshJobs() { try { const r = await this.api('/api/models/jobs'); this.jobs = r.jobs || []; } catch(e){} },
-    async cancelDl(id) { await this.api('/api/models/cancel?id='+id, { method:'POST' }); },
-    statusCls(s) {
-      return { queued:'bg-gray-700 text-gray-300', downloading:'bg-sky-900/60 text-sky-300',
-        done:'bg-green-900/60 text-green-300', error:'bg-red-900/60 text-red-300', cancelled:'bg-gray-800 text-gray-500' }[s] || 'bg-gray-800';
-    },
-    statusLabel(j) {
-      return { queued:'대기', downloading:'다운로드 중', done:'완료', error:'오류', cancelled:'취소됨' }[j.status] || j.status;
-    },
-    pct(j) {
-      if (j.status==='done') return 100;
-      if (j.total_bytes) return Math.min(100, Math.round(j.done_bytes/j.total_bytes*100));
-      if (j.progress) return Math.round(j.progress*100);
-      return j.status==='downloading' ? 5 : 0;
-    },
-    statusText(j) {
-      if (j.status==='error') return j.error || '오류';
-      if (j.status_text) return j.status_text;
-      return '';
-    },
-    fmtSize(n) {
-      if (n===0) return '';
-      const u=['B','KB','MB','GB','TB']; let v=n;
-      for (let i=0;i<u.length;i++){ if(v<1024) return v.toFixed(1)+u[i]; v/=1024; }
-      return v.toFixed(1)+'PB';
-    },
-    async loadRoots() { try { const r = await this.api('/api/fs/roots'); this.roots = r.roots || []; } catch(e){} },
-    async go(path) { try { const r = await this.api('/api/fs/list?path='+encodeURIComponent(path)); this.fs = r; } catch(e){ alert('접근 불가: '+e); } },
-    goRoot() { this.go('/'); },
-    async mkDir() {
-      if (!this.newFolder || !this.fs.path) return;
-      try { await this.api('/api/fs/mkdir?path='+encodeURIComponent(this.fs.path)+'&name='+encodeURIComponent(this.newFolder), {method:'POST'}); this.newFolder=''; this.go(this.fs.path); }
-      catch(e){ alert(e); }
-    },
-    async del(e) {
-      if (!confirm(e.name+' 삭제?')) return;
-      await this.api('/api/fs/delete?path='+encodeURIComponent(e.path), {method:'DELETE'});
-      this.go(this.fs.path);
-    },
-    async rename(e) {
-      const n = prompt('새 이름:', e.name); if (!n) return;
-      await this.api('/api/fs/rename?path='+encodeURIComponent(e.path)+'&new_name='+encodeURIComponent(n), {method:'POST'});
-      this.go(this.fs.path);
-    },
-    async upload(ev) {
-      const f = ev.target.files[0]; if (!f) return;
-      const fd = new FormData(); fd.append('file', f);
-      fd.append('path', this.fs.path);
-      await fetch('/api/fs/upload', { method:'POST', body: fd });
-      this.go(this.fs.path);
-      ev.target.value = '';
-    },
+    async api(path, options={}) { const r=await fetch(path,options); if(!r.ok){let msg=''; try{const d=await r.json();msg=d.detail||JSON.stringify(d);}catch{msg=await r.text();} throw new Error(msg||`HTTP ${r.status}`);} return r.json(); },
+    fileKey(file) { return `${file.version||''}\u0000${file.name}`; },
+    formatBytes(value) { if(value===null||value===undefined||!Number.isFinite(Number(value))) return '크기 미상'; let n=Number(value), units=['B','KB','MB','GB','TB']; let i=0; while(n>=1024&&i<units.length-1){n/=1024;i++;} return `${n.toFixed(i?1:0)} ${units[i]}`; },
+    formatDuration(seconds) { const s=Math.max(0,Number(seconds)||0); if(s<60)return `${Math.ceil(s)}초`; if(s<3600)return `${Math.ceil(s/60)}분`; return `${(s/3600).toFixed(1)}시간`; },
+    formatDate(value) { return new Date(Number(value)*1000).toLocaleString('ko-KR'); },
+    async inspectUrl() { this.inspecting=true;this.error='';this.inspection=null;this.selectedFiles=[]; try{this.inspection=await this.api('/api/models/inspect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:this.url})});this.selectRecommended();}catch(e){this.error=e.message;}finally{this.inspecting=false;} },
+    selectRecommended() { const recommended=(this.inspection?.files||[]).filter(f=>f.recommended); const source=recommended.length?recommended:(this.inspection?.files||[]).slice(0,1); this.selectedFiles=source.map(this.fileKey); },
+    toggleAll() { const visible=this.filteredFiles.map(this.fileKey); const current=new Set(this.selectedFiles); const all=visible.every(k=>current.has(k)); visible.forEach(k=>all?current.delete(k):current.add(k)); this.selectedFiles=[...current]; },
+    async loadDestinations() { const data=await this.api('/api/models/destinations');this.destinations=data.destinations||[];if(!this.destination&&this.destinations.length)this.destination=this.destinations[0].path;if(!this.installedRoot&&this.rootDestinations.length)this.installedRoot=this.rootDestinations[0].path; },
+    async createFolder() { try{const data=await this.api('/api/models/folders',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({parent:this.destination,name:this.newFolder})});this.newFolder='';await this.loadDestinations();this.destination=data.path;}catch(e){this.error=e.message;} },
+    async startDownload() { this.starting=true;this.error=''; try{await this.api('/api/models/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({source:this.inspection.source,repo:this.inspection.repo||null,revision:this.inspection.revision||'main',destination:this.destination,files:this.selectedObjects.map(f=>({name:f.name,url:f.url||null,size:f.size||null}))})});this.selectedFiles=[];await this.loadJobs();}catch(e){this.error=e.message;}finally{this.starting=false;} },
+    async loadJobs() { try{const data=await this.api('/api/models/jobs');this.jobs=data.jobs||[];}catch{} },
+    async cancelJob(id) { try{await this.api(`/api/models/jobs/${id}/cancel`,{method:'POST'});await this.loadJobs();}catch(e){this.error=e.message;} },
+    jobPercent(job) { if(job.status==='done')return 100;if(!job.total_bytes)return job.status==='downloading'?4:0;return Math.min(100,(job.done_bytes/job.total_bytes)*100); },
+    statusLabel(status) { return {queued:'대기',downloading:'다운로드 중',done:'완료',error:'오류',cancelled:'취소'}[status]||status; },
+    statusClass(status) { return {queued:'bg-zinc-800 text-zinc-400',downloading:'bg-indigo-500/15 text-indigo-300',done:'bg-emerald-500/15 text-emerald-300',error:'bg-rose-500/15 text-rose-300',cancelled:'bg-zinc-800 text-zinc-600'}[status]||'bg-zinc-800'; },
+    async loadInstalled() { if(!this.installedRoot)return;this.installedLoading=true;try{const q=new URLSearchParams({root:this.installedRoot,query:this.installedQuery});const data=await this.api('/api/models/installed?'+q);this.installedFiles=data.files||[];}catch(e){this.error=e.message;}finally{this.installedLoading=false;} },
   },
-  mounted() {
-    this.loadSettings(); this.loadRoots(); this.go('/'); this.refreshJobs();
-    this.timer = setInterval(this.refreshJobs, 2000);
-  },
-  beforeUnmount() { clearInterval(this.timer); }
+  async mounted() { try{await this.loadDestinations();await this.loadJobs();}catch(e){this.error=e.message;}this.timer=setInterval(this.loadJobs,1000); },
+  beforeUnmount() { clearInterval(this.timer); },
 }).mount('#app');
 </script>
 </body>

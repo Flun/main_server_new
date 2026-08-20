@@ -1,0 +1,17 @@
+--- a/custom_nodes/ComfyUI_JH_Nodes/__init__.py
++++ b/custom_nodes/ComfyUI_JH_Nodes/__init__.py
+@@ -2309,1 +2309,1 @@
+-                "server_url": ("STRING", {"default": "http://127.0.0.1:8080"}),
++                "server_url": ("STRING", {"default": "http://127.0.0.1:8082"}),
+@@ -2601,4 +2601,11 @@
+     def create_prompt(self, prompt, mode, instruction, enable_vision, vision_max_size, video_frames, server_url, model, max_tokens, temperature, seed, timeout, display_text="", display_lora_info="", character_sheet_mode="Normal", curvy_mode=False, glamorous_mode=False, huge_breasts_mode=False, character_identity="LoRA / model", identity_trigger="", curvy_strength=1.0, glamorous_strength=1.0, huge_breasts_strength=1.0, reuse_identical_image=False, supplemental_prompt="", supplemental_position="After base prompt", translation_provider="Papago", translate_prompt=False, translate_instruction=False, translate_supplemental=False, image=None, video=None, lora_info=None, unique_id=None, extra_pnginfo=None):
+         server_url = server_url.rstrip("/")
+         parsed_url = urllib.parse.urlparse(server_url)
++        # 8080 is the human-facing VRAM guard. A ComfyUI node calling it would
++        # wait for its own running queue forever, so migrate old workflows to
++        # the direct llama backend automatically.
++        if parsed_url.hostname in {"127.0.0.1", "localhost", "::1"} and parsed_url.port == 8080:
++            direct_host = f"[{parsed_url.hostname}]" if ":" in parsed_url.hostname else parsed_url.hostname
++            server_url = parsed_url._replace(netloc=f"{direct_host}:8082").geturl()
++            parsed_url = urllib.parse.urlparse(server_url)
+         if parsed_url.scheme != "http" or parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
