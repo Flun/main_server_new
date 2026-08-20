@@ -40,6 +40,12 @@ class Service:
         pid = self.read_pidfile()
         if pid and self._pid_alive(pid):
             self.pid = pid
+            if self.started_at is None:
+                try:
+                    import psutil
+                    self.started_at = psutil.Process(pid).create_time()
+                except Exception:
+                    pass
             return True
         self.pid = None
         self.started_at = None
@@ -60,7 +66,12 @@ class Service:
         if env:
             env_full.update(env)
         if device is not None:
-            env_full["CUDA_VISIBLE_DEVICES"] = str(device)
+            if isinstance(device, (list, tuple)):
+                visible_devices = ",".join(str(item).strip() for item in device if str(item).strip())
+            else:
+                visible_devices = str(device).strip()
+            if visible_devices:
+                env_full["CUDA_VISIBLE_DEVICES"] = visible_devices
         log_f = open(self.log_file, "a", encoding="utf-8", errors="replace")
         log_f.write(f"\n===== {time.strftime('%Y-%m-%d %H:%M:%S')} 시작: {' '.join(cmd)} =====\n")
         log_f.flush()
@@ -79,7 +90,7 @@ class Service:
         )
         self.pid = p.pid
         self.started_at = time.time()
-        self.device = device
+        self.device = list(device) if isinstance(device, (list, tuple)) else device
         with open(self._pidfile, "w") as f:
             f.write(str(p.pid))
         return p.pid

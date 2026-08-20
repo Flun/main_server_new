@@ -191,10 +191,10 @@
 const {createApp}=Vue;
 createApp({
   data(){return{
-    settings:{connection:{jupyter_url:'',env_file:'C:\\main_server\\vast_qwen.env',proxy_script:'C:\\main_server\\vast_qwen_proxy.py',local_proxy_host:'127.0.0.1',local_proxy_port:18081,request_timeout:1800,connect_timeout:20},llama:{},comfy:{}},
+    settings:{connection:{jupyter_url:'',env_file:'/srv/main_server_new/vast_qwen.env',proxy_script:'/srv/main_server_new/vast_qwen_proxy.py',local_proxy_host:'127.0.0.1',local_proxy_port:18081,request_timeout:1800,connect_timeout:20},llama:{},comfy:{}},
     resources:null,connected:false,busy:false,showToken:false,tab:'overview',modelFolders:{},timer:null,
     tabs:[{id:'overview',label:'Overview'},{id:'llama',label:'llama.cpp'},{id:'comfy',label:'ComfyUI'},{id:'models',label:'Models'},{id:'network',label:'Tunnel / Proxy'},{id:'logs',label:'Setup / Logs'}],
-    cacheTypes:['f16','bf16','q8_0','q5_1','q5_0','q4_1','q4_0'],tunnel:{port:18080,update_proxy:true},setup:{h3_zip:'C:\\Users\\Flux\\Desktop\\h3_custom_nodes.zip',h3_script:'C:\\Users\\Flux\\Desktop\\setup_h3_final_v2.sh'},
+    cacheTypes:['f16','bf16','q8_0','q5_1','q5_0','q4_1','q4_0'],tunnel:{port:18080,update_proxy:true},setup:{h3_zip:'',h3_script:''},
     download:{url:'',category:'diffusion_models',filename:'',destination:'',log_path:'',log:''},logType:'llama',logText:'',
     logTypes:[{id:'llama',label:'llama.cpp'},{id:'comfy',label:'ComfyUI'},{id:'tunnel',label:'Tunnel'},{id:'setup_llama',label:'llama 설치'},{id:'setup_h3',label:'H3 설치'}],
     comfyFlags:[

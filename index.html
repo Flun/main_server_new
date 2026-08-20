@@ -163,6 +163,48 @@
             </div>
         </section>
 
+        <!-- GPU assignment / offload map -->
+        <section class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 shadow-sm">
+            <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                    <h2 class="text-xs font-semibold text-zinc-500 tracking-wider uppercase">GPU / Offload Map</h2>
+                    <p class="mt-1 text-xs text-zinc-500">물리 GPU별 실제 VRAM 점유와 서비스 할당. 선택 변경은 다음 실행부터 적용됩니다.</p>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 text-[11px]">
+                    <label class="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-950/50 px-2 py-1 text-zinc-300">
+                        <input type="checkbox" v-model="autoStart.autostart" @change="saveAutoStart"> 부팅 자동 실행
+                    </label>
+                    <label v-for="item in autoStartDefs" :key="item.key" class="flex items-center gap-1.5 rounded border border-zinc-800 px-2 py-1 text-zinc-400" :class="!autoStart.autostart && 'opacity-40'">
+                        <input type="checkbox" v-model="autoStart[item.key]" @change="saveAutoStart" :disabled="!autoStart.autostart"> {{ item.label }}
+                    </label>
+                </div>
+            </div>
+            <div v-if="!gpuTopology.available" class="mt-4 rounded-lg border border-dashed border-zinc-700 px-4 py-5 text-center text-xs text-zinc-500">NVIDIA GPU 정보를 기다리는 중입니다.</div>
+            <div v-else class="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
+                <div v-for="gpu in gpuTopology.gpus" :key="gpu.uuid" class="rounded-lg border border-zinc-800 bg-zinc-950/50 p-4">
+                    <div class="flex items-start justify-between gap-3">
+                        <div class="min-w-0">
+                            <div class="flex items-center gap-2"><span class="rounded bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">GPU {{ gpu.index }}</span><span class="truncate text-sm font-semibold">{{ gpu.name }}</span></div>
+                            <div class="mt-1 truncate font-mono text-[10px] text-zinc-600">{{ gpu.pci_bus_id }} · {{ gpu.uuid }}</div>
+                        </div>
+                        <div class="shrink-0 text-right"><div class="text-sm font-semibold">{{ (gpu.vram_used / 1024).toFixed(1) }} / {{ (gpu.vram_total / 1024).toFixed(1) }} GB</div><div class="text-[10px] text-zinc-500">Core {{ gpu.util }}%</div></div>
+                    </div>
+                    <div class="mt-3 h-2 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full" :class="gpu.mem_util > 90 ? 'bg-rose-500' : gpu.mem_util > 70 ? 'bg-amber-500' : 'bg-sky-500'" :style="{width: gpu.mem_util + '%'}"></div></div>
+                    <div class="mt-3 space-y-1.5">
+                        <div v-for="process in gpu.processes" :key="process.pid" class="flex items-center justify-between gap-3 text-[11px]"><span class="truncate text-zinc-400">{{ process.service_label }} · {{ getDirName(process.name) }} #{{ process.pid }}</span><span class="shrink-0 font-mono text-zinc-300">{{ process.vram_used_gb === null ? 'N/A' : process.vram_used_gb + ' GB' }}</span></div>
+                        <div v-if="!gpu.processes.length" class="text-[11px] text-zinc-600">GPU 프로세스 없음</div>
+                    </div>
+                </div>
+            </div>
+            <div v-if="gpuTopology.available" class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+                <div v-for="key in ['comfyui','llama']" :key="key" class="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs">
+                    <div class="flex justify-between"><span class="font-semibold">{{ gpuTopology.services[key]?.label }}</span><span class="font-mono text-amber-300">{{ gpuTopology.services[key]?.vram_used_gb || 0 }} GB</span></div>
+                    <div class="mt-2 text-[11px] text-zinc-500">지정: {{ (gpuTopology.services[key]?.configured_devices || []).join(', ') || '모든 GPU' }} · 실사용: {{ (gpuTopology.services[key]?.active_gpu_indexes || []).map(i => 'GPU '+i).join(', ') || '없음' }}</div>
+                    <div v-if="key === 'llama' && gpuTopology.services[key]?.offload" class="mt-1 text-[11px] text-zinc-500">오프로딩 {{ gpuTopology.services[key].offload.layers_offloaded ?? '?' }}/{{ gpuTopology.services[key].offload.layers_total ?? '?' }} layers · GPU buffer {{ gpuTopology.services[key].offload.gpu_model_buffer_gb ?? '?' }} GB · RAM buffer {{ gpuTopology.services[key].offload.cpu_model_buffer_gb ?? '?' }} GB</div>
+                </div>
+            </div>
+        </section>
+
         <!-- Services (Cards) -->
         <section class="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-5">
             
@@ -241,9 +283,20 @@
                             <span v-if="comfySettingsSaving" class="text-[10px] text-amber-400">Saving</span>
                         </div>
                         <div class="grid grid-cols-1 gap-2 text-xs text-zinc-300">
+                            <label class="flex items-center justify-between gap-3 rounded-md border border-sky-500/20 bg-sky-500/5 px-2.5 py-2">
+                                <span class="font-mono text-[11px] text-sky-300">Physical GPU</span>
+                                <select v-model="comfySettings.gpu_device" @change="saveComfySettings" class="max-w-[65%] rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-[11px]">
+                                    <option value="">All visible</option>
+                                    <option v-for="gpu in gpuTopology.gpus" :key="'comfy-'+gpu.uuid" :value="gpu.uuid">GPU {{gpu.index}} · {{gpu.name}}</option>
+                                </select>
+                            </label>
                             <label v-for="option in comfyOptionDefs" :key="option.key" class="flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 px-2.5 py-2">
                                 <span class="font-mono text-[11px] text-zinc-300">{{ option.label }}</span>
                                 <input type="checkbox" v-model="comfySettings[option.key]" @change="saveComfySettings" class="h-4 w-4 rounded border-zinc-700 bg-zinc-800 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-950">
+                            </label>
+                            <label class="flex items-center justify-between gap-3 rounded-md border border-zinc-800 bg-zinc-900/70 px-2.5 py-2">
+                                <span class="flex items-center gap-2 font-mono text-[11px]"><input type="checkbox" v-model="comfySettings.reserve_vram_enabled" @change="saveComfySettings"> --reserve-vram</span>
+                                <input type="number" min="0" step="0.25" v-model.number="comfySettings.reserve_vram" @change="saveComfySettings" :disabled="!comfySettings.reserve_vram_enabled" class="w-20 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-[11px] disabled:opacity-40"><span class="text-[10px] text-zinc-500">GB</span>
                             </label>
                         </div>
                     </div>
@@ -357,10 +410,20 @@
                                 <label class="flex items-center gap-2.5 cursor-pointer select-none bg-zinc-900/60 border border-sky-800/40 rounded-lg px-3 py-2.5 hover:border-sky-700/60 transition">
                                     <input type="checkbox" v-model="vramCleanupEnabled" @change="saveVramToggle" class="w-4 h-4 accent-sky-500 cursor-pointer">
                                     <span class="flex flex-col">
-                                        <span class="text-xs font-medium text-zinc-200">VRAM 클리너 (8082 가드)</span>
-                                        <span class="text-[11px] text-zinc-500">JH 노드가 8082로 호출하면 ComfyUI VRAM을 해제 후 llama-server로 전달</span>
+                                        <span class="text-xs font-medium text-zinc-200">ComfyUI VRAM Cleanup (8080 가드)</span>
+                                        <span class="text-[11px] text-zinc-500">사람이 8080으로 추론하면 ComfyUI 완료 대기·VRAM 정리 후 내부 8082로 전달. ComfyUI 노드는 8082 직접 사용.</span>
                                     </span>
                                 </label>
+                            </div>
+                            <div class="flex flex-col col-span-2">
+                                <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Physical GPUs (선택 순서 유지)</label>
+                                <div class="flex flex-wrap gap-2">
+                                    <button v-for="gpu in gpuTopology.gpus" :key="'llama-'+gpu.uuid" type="button" @click="toggleLlamaGpu(gpu.uuid)" class="rounded border px-2.5 py-1.5 text-[11px]" :class="config.gpuDevices.includes(gpu.uuid) ? 'border-indigo-500/60 bg-indigo-500/15 text-indigo-200' : 'border-zinc-700 bg-zinc-900 text-zinc-500'">{{ config.gpuDevices.indexOf(gpu.uuid) >= 0 ? (config.gpuDevices.indexOf(gpu.uuid)+1)+'. ' : '' }}GPU {{gpu.index}} · {{gpu.name}}</button>
+                                    <span v-if="!config.gpuDevices.length" class="self-center text-[11px] text-zinc-600">미선택 시 모든 GPU 표시</span>
+                                </div>
+                                <div v-if="config.gpuDevices.length > 1" class="mt-2 flex flex-wrap gap-2">
+                                    <span v-for="(uuid,index) in config.gpuDevices" :key="'order-'+uuid" class="flex items-center gap-1 rounded bg-zinc-900 px-2 py-1 font-mono text-[10px] text-zinc-400">{{index+1}}. GPU {{gpuIndex(uuid)}} <button type="button" @click="moveLlamaGpu(index,-1)" :disabled="index===0" class="text-zinc-500 disabled:opacity-30">↑</button><button type="button" @click="moveLlamaGpu(index,1)" :disabled="index===config.gpuDevices.length-1" class="text-zinc-500 disabled:opacity-30">↓</button></span>
+                                </div>
                             </div>
                             <div class="flex flex-col">
                                 <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Main Model (-m)</label>
@@ -411,8 +474,16 @@
                             </div>
 
                             <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-indigo-400 mb-1.5">Reasoning Mode (-rea)</label>
+                                <select v-model="config.reasoningMode" class="input-base text-xs">
+                                    <option value="auto">Auto (model template)</option>
+                                    <option value="on">On</option>
+                                    <option value="off">Off</option>
+                                </select>
+                            </div>
+                            <div class="flex flex-col">
                                 <label class="text-[11px] font-medium text-indigo-400 mb-1.5">Reasoning Budget</label>
-                                <select v-model="config.reasoningBudget" class="input-base text-xs">
+                                <select v-model="config.reasoningBudget" :disabled="config.reasoningMode === 'off'" class="input-base text-xs disabled:opacity-40">
                                     <option value="">Default</option>
                                     <option value="0">0 (Disable)</option>
                                     <option value="512">512</option>
@@ -428,6 +499,11 @@
                             <div class="flex flex-col">
                                 <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Parallel (-np)</label>
                                 <input type="number" v-model="config.parallel" class="input-base text-xs" placeholder="1">
+                            </div>
+
+                            <div class="flex flex-col">
+                                <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Fit Margin MiB (--fit-target)</label>
+                                <input type="number" min="0" v-model="config.fitTarget" :disabled="!config.fit" class="input-base text-xs disabled:opacity-40" placeholder="1024">
                             </div>
 
                             <div class="flex flex-col">
@@ -454,15 +530,8 @@
                             </div>
                             <div class="flex flex-col">
                                 <label class="text-[11px] font-medium text-indigo-400 mb-1.5" title="Idle 후 모델을 메모리에서 언로드합니다. 1 = 추론 종료 1초 후 언로드">VRAM Auto-Unload (--sleep-idle-seconds)</label>
-                                <select v-model="config.sleepIdleSeconds" class="input-base text-xs">
-                                    <option value="">Disabled</option>
-                                    <option value="1">1 (추론 후 1초 뒤 언로드)</option>
-                                    <option value="2">2</option>
-                                    <option value="5">5</option>
-                                    <option value="10">10</option>
-                                    <option value="30">30</option>
-                                    <option value="60">60</option>
-                                </select>
+                                <input type="number" min="-1" v-model="config.sleepIdleSeconds" class="input-base text-xs" placeholder="-1 (Disabled)">
+                                <span class="mt-1 text-[10px] text-zinc-600">-1 비활성 · 30–120 권장 · 1은 요청 직후 거의 즉시 언로드</span>
                             </div>
                         </div>
 
@@ -507,6 +576,25 @@
                                 <div class="flex flex-col col-span-2 lg:col-span-3">
                                     <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft Device (--spec-draft-device)</label>
                                     <input type="text" v-model="config.specDraftDevice" class="input-base text-xs" placeholder="none / cuda / cuda:0">
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- Dynamic optional arguments -->
+                        <div class="mt-5 pt-4 border-t border-zinc-800">
+                            <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+                                <div><div class="text-[11px] font-semibold text-zinc-500 uppercase tracking-widest">Optional Arguments</div><div class="mt-1 text-[10px] text-zinc-600">사용할 옵션만 추가되며 프리셋과 마지막 실행에 함께 저장됩니다.</div></div>
+                                <div class="flex gap-2">
+                                    <select v-model="optionalArgToAdd" class="input-base text-xs"><option value="">Add an argument...</option><option v-for="item in availableOptionalArgs" :key="item.key" :value="item.key">{{item.label}}</option></select>
+                                    <button type="button" @click="addOptionalArg" :disabled="!optionalArgToAdd" class="rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-300 disabled:opacity-30">Add</button>
+                                </div>
+                            </div>
+                            <div v-if="activeOptionalArgs.length" class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                <div v-for="item in activeOptionalArgs" :key="item.key" class="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3">
+                                    <div class="flex items-start justify-between gap-2"><div><div class="text-xs font-medium text-zinc-300">{{item.label}}</div><div class="font-mono text-[10px] text-zinc-600">{{item.flag}}</div></div><button type="button" @click="removeOptionalArg(item.key)" class="text-zinc-600 hover:text-rose-400" :aria-label="'Remove '+item.label">×</button></div>
+                                    <label v-if="item.type === 'boolean'" class="mt-3 flex items-center gap-2 text-[11px] text-zinc-400"><input type="checkbox" v-model="config.optionalArgs[item.key]"> Enabled</label>
+                                    <select v-else-if="item.type === 'select'" v-model="config.optionalArgs[item.key]" class="input-base mt-2 w-full text-xs"><option v-for="choice in item.options" :key="choice.value" :value="choice.value">{{choice.label}}</option></select>
+                                    <input v-else :type="item.type === 'number' ? 'number' : 'text'" v-model="config.optionalArgs[item.key]" class="input-base mt-2 w-full text-xs" :placeholder="item.placeholder || ''">
                                 </div>
                             </div>
                         </div>
@@ -803,22 +891,52 @@
                     scanData: { versions:[], models:[] },
                     logModal: { show: false, server: '', title: '', content: '', autoScroll: true },
                     logTimer: null, hwTimer: null,
+                    gpuTopology: { available: false, gpus: [], services: {} },
+                    autoStart: { autostart: false, autostart_llama: false, autostart_comfyui: false, autostart_bot: false, autostart_watcher: false },
+                    autoStartDefs: [
+                        { key: 'autostart_comfyui', label: 'ComfyUI' }, { key: 'autostart_llama', label: 'llama.cpp' },
+                        { key: 'autostart_bot', label: 'Bot' }, { key: 'autostart_watcher', label: 'Watcher' }
+                    ],
                     comfySettings: {
+                        listen: true,
                         use_sage_attention: true,
                         preview_method_none: false,
                         cache_none: false,
-                        reserve_vram_1: false,
+                        reserve_vram_enabled: true,
+                        reserve_vram: 1,
                         disable_async_offload: false,
-                        fast_disk: false
+                        fast_disk: false,
+                        fast_fp16_accumulation: true,
+                        gpu_device: ''
                     },
                     comfySettingsSaving: false,
                     comfyOptionDefs: [
+                        { key: 'listen', label: '--listen 0.0.0.0' },
                         { key: 'use_sage_attention', label: '--use-sage-attention' },
                         { key: 'preview_method_none', label: '--preview-method none' },
                         { key: 'cache_none', label: '--cache-none' },
-                        { key: 'reserve_vram_1', label: '--reserve-vram 1' },
                         { key: 'disable_async_offload', label: '--disable-async-offload' },
-                        { key: 'fast_disk', label: '--fast-disk' }
+                        { key: 'fast_disk', label: '--fast-disk' },
+                        { key: 'fast_fp16_accumulation', label: '--fast fp16_accumulation' }
+                    ],
+                    optionalArgToAdd: '',
+                    optionalArgDefs: [
+                        {key:'batchSize',label:'Batch size',flag:'--batch-size',type:'number',default:'2048',placeholder:'2048'},
+                        {key:'ubatchSize',label:'Micro batch',flag:'--ubatch-size',type:'number',default:'512',placeholder:'512'},
+                        {key:'threadsBatch',label:'Prompt threads',flag:'--threads-batch',type:'number',default:'',placeholder:'Auto'},
+                        {key:'loadMode',label:'Model load mode',flag:'--load-mode',type:'select',default:'auto',options:[{value:'auto',label:'Auto'},{value:'none',label:'None'},{value:'mmap',label:'mmap'},{value:'mlock',label:'mlock'},{value:'mmap+mlock',label:'mmap + mlock'},{value:'dio',label:'Direct I/O'}]},
+                        {key:'splitMode',label:'Multi-GPU split mode',flag:'--split-mode',type:'select',default:'layer',options:[{value:'none',label:'None'},{value:'layer',label:'Layer'},{value:'row',label:'Row'},{value:'tensor',label:'Tensor'}]},
+                        {key:'tensorSplit',label:'Tensor split',flag:'--tensor-split',type:'text',default:'',placeholder:'1,1'},
+                        {key:'mainGpu',label:'Main GPU',flag:'--main-gpu',type:'number',default:'0',placeholder:'0'},
+                        {key:'cpuMoe',label:'MoE weights on CPU',flag:'--cpu-moe',type:'boolean',default:true},
+                        {key:'cpuMoeLayers',label:'MoE CPU layers',flag:'--n-cpu-moe',type:'number',default:'',placeholder:'Layer count'},
+                        {key:'cacheSwa',label:'Full-size SWA cache',flag:'--swa-full',type:'boolean',default:true},
+                        {key:'cacheReuse',label:'Prompt cache reuse',flag:'--cache-reuse',type:'number',default:'',placeholder:'Minimum chunk'},
+                        {key:'serverTimeout',label:'Server timeout',flag:'--timeout',type:'number',default:'3600',placeholder:'Seconds'},
+                        {key:'httpThreads',label:'HTTP threads',flag:'--threads-http',type:'number',default:'',placeholder:'Auto'},
+                        {key:'metrics',label:'Prometheus metrics',flag:'--metrics',type:'boolean',default:true},
+                        {key:'noSlots',label:'Hide slots endpoint',flag:'--no-slots',type:'boolean',default:true},
+                        {key:'noWarmup',label:'Skip warmup',flag:'--no-warmup',type:'boolean',default:true}
                     ],
                     memo: { show: false, content: '', saving: false }, memoTimeout: null,
                     isFetchingReleases: false, showUpdateModal: false,
@@ -833,35 +951,40 @@
                     config: {
                         version: "", model: "", mmproj: "", ctx: "262144", host: "0.0.0.0", port: "8080",
                         fit: true, flash: true, cacheK: "q4_0", cacheV: "q4_0", tempMode: "", useTemplate: false,
-                        reasoningBudget: "", ngl: "auto", nPredict: "-1", parallel: "1", threads: "",
+                        reasoningMode: "auto", reasoningBudget: "", ngl: "auto", fitTarget: "1024", nPredict: "-1", parallel: "1", threads: "",
                         sleepIdleSeconds: "", specType: "", specDraftNMax: "2", specDraftNMin: "",
-                        specDraftPSplit: "", specDraftPMin: "", specDraftNgl: "", specDraftDevice: ""
+                        specDraftPSplit: "", specDraftPMin: "", specDraftNgl: "", specDraftDevice: "",
+                        optionalArgs: {}, gpuDevices: []
                     },
                     hwHistoryModal: { show: false, history: [] },
                     hwHistoryTimer: null
                 };
             },
             computed: {
+                availableOptionalArgs() { return this.optionalArgDefs.filter(item => !Object.prototype.hasOwnProperty.call(this.config.optionalArgs || {}, item.key)); },
+                activeOptionalArgs() { return this.optionalArgDefs.filter(item => Object.prototype.hasOwnProperty.call(this.config.optionalArgs || {}, item.key)); },
                 computedCommand() {
                     let cmd =[];
+                    if (this.config.gpuDevices?.length) cmd.push(`CUDA_VISIBLE_DEVICES="${this.config.gpuDevices.join(',')}"`);
                     if (this.config.model) cmd.push(`-m "${this.config.model}"`);
                     if (this.config.mmproj) cmd.push(`--mmproj "${this.config.mmproj}"`);
                     if (this.config.host) cmd.push(`--host ${this.config.host}`);
-                    if (this.config.port) cmd.push(`--port ${this.config.port}`);
+                    cmd.push(`--port 8082`);
                     if (this.config.ctx) cmd.push(`--ctx-size ${this.config.ctx}`);
                     
                     if (this.config.ngl && this.config.ngl !== "") cmd.push(`-ngl ${this.config.ngl}`);
-                    if (this.config.reasoningBudget !== "") cmd.push(`--reasoning-budget ${this.config.reasoningBudget}`);
+                    if (this.config.reasoningMode !== 'off' && this.config.reasoningBudget !== "") cmd.push(`--reasoning-budget ${this.config.reasoningBudget}`);
+                    if (this.config.reasoningMode && this.config.reasoningMode !== 'auto') cmd.push(`--reasoning ${this.config.reasoningMode}`);
                     if (this.config.nPredict && this.config.nPredict !== "-1") cmd.push(`-n ${this.config.nPredict}`);
                     if (this.config.parallel && this.config.parallel !== "1") cmd.push(`-np ${this.config.parallel}`);
                     if (this.config.threads && this.config.threads !== "") cmd.push(`-t ${this.config.threads}`);
 
-                    if (this.config.fit) cmd.push(`--fit on`);
+                    if (this.config.fit) { cmd.push(`--fit on`); if (this.config.fitTarget) cmd.push(`--fit-target ${this.config.fitTarget}`); }
                     if (this.config.flash) cmd.push(`--flash-attn on`);
                     if (this.config.cacheK) cmd.push(`--cache-type-k ${this.config.cacheK}`);
                     if (this.config.cacheV) cmd.push(`--cache-type-v ${this.config.cacheV}`);
 
-                    if (this.config.sleepIdleSeconds && this.config.sleepIdleSeconds !== "-1") {
+                    if (this.config.sleepIdleSeconds !== "" && this.config.sleepIdleSeconds !== null) {
                         cmd.push(`--sleep-idle-seconds ${this.config.sleepIdleSeconds}`);
                     }
 
@@ -884,6 +1007,11 @@
                     if (this.config.useTemplate) {
                         cmd.push(`--jinja`);
                     }
+                    for (const item of this.activeOptionalArgs) {
+                        const value = this.config.optionalArgs[item.key];
+                        if (item.type === 'boolean') { if (value) cmd.push(item.flag); }
+                        else if (value !== '' && value !== null && value !== undefined) cmd.push(`${item.flag} ${value}`);
+                    }
                     return cmd.join(" ");
                 }
             },
@@ -892,6 +1020,61 @@
                     if (!path) return "";
                     const parts = String(path).split(/[\\/]/);
                     return parts[parts.length - 1] || path;
+                },
+
+                gpuIndex(uuid) {
+                    const gpu = this.gpuTopology.gpus.find(item => item.uuid === uuid);
+                    return gpu ? gpu.index : '?';
+                },
+                toggleLlamaGpu(uuid) {
+                    const devices = [...(this.config.gpuDevices || [])];
+                    const index = devices.indexOf(uuid);
+                    if (index >= 0) devices.splice(index, 1); else devices.push(uuid);
+                    this.config.gpuDevices = devices;
+                },
+                moveLlamaGpu(index, delta) {
+                    const target = index + delta;
+                    if (target < 0 || target >= this.config.gpuDevices.length) return;
+                    const devices = [...this.config.gpuDevices];
+                    [devices[index], devices[target]] = [devices[target], devices[index]];
+                    this.config.gpuDevices = devices;
+                },
+                addOptionalArg() {
+                    const item = this.optionalArgDefs.find(def => def.key === this.optionalArgToAdd);
+                    if (!item) return;
+                    this.config.optionalArgs = { ...(this.config.optionalArgs || {}), [item.key]: item.default };
+                    this.optionalArgToAdd = '';
+                },
+                removeOptionalArg(key) {
+                    const values = { ...(this.config.optionalArgs || {}) };
+                    delete values[key];
+                    this.config.optionalArgs = values;
+                },
+                validateLlamaConfig() {
+                    const values = this.config.optionalArgs || {};
+                    if (values.batchSize && values.ubatchSize && Number(values.ubatchSize) > Number(values.batchSize)) {
+                        alert('Micro batch는 Batch size보다 클 수 없습니다.'); return false;
+                    }
+                    if (values.cpuMoe && values.cpuMoeLayers) {
+                        alert('--cpu-moe와 --n-cpu-moe는 동시에 사용할 수 없습니다.'); return false;
+                    }
+                    return true;
+                },
+
+                async fetchGpuTopology() {
+                    try { const res = await fetch('/api/gpus'); this.gpuTopology = await res.json(); } catch (e) {}
+                },
+                async fetchAutoStart() {
+                    try {
+                        const res = await fetch('/api/linux-settings'); const data = await res.json();
+                        this.autoStart = { ...this.autoStart, ...(data.effective || {}) };
+                    } catch (e) {}
+                },
+                async saveAutoStart() {
+                    try {
+                        const res = await fetch('/api/linux-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(this.autoStart)});
+                        if (!res.ok) throw new Error(await res.text());
+                    } catch (e) { alert('자동 실행 설정 저장 실패: '+e.message); }
                 },
 
                 // 모던한 컬러 팔레트 적용 (Zinc, Emerald, Amber, Rose)
@@ -1033,7 +1216,8 @@
                     
                     try {
                         const apiServer = server === 'llamacpp' ? 'llama' : server;
-                        await fetch(`/api/force_kill/${apiServer}`, { method: 'POST' });
+                        const headers = server === 'comfyui' ? {'X-ComfyUI-Stop-Confirm':'confirmed'} : {};
+                        await fetch(`/api/force_kill/${apiServer}`, { method: 'POST', headers });
                         setTimeout(() => this.fetchStatus(), 1000);
                     } catch(e) { alert("Kill request failed"); }
                 },
@@ -1043,7 +1227,7 @@
                         return;
                     }
                     try {
-                        const res = await fetch('/api/panic', { method: 'POST' });
+                        const res = await fetch('/api/panic', { method: 'POST', headers: {'X-ComfyUI-Stop-Confirm':'confirmed'} });
                         if (!res.ok) throw new Error(await res.text());
                         setTimeout(() => this.fetchStatus(), 1500);
                     } catch(e) { alert("Panic sequence failed: " + e.message); }
@@ -1130,12 +1314,16 @@
                 },
 
                 async controlServer(server, action) {
+                    if (server === 'comfyui' && action === 'stop' && !confirm('ComfyUI 작업을 종료하시겠습니까? 진행 중인 생성 작업이 중단될 수 있습니다.')) return;
                     this.loading[server] = true;
                     try {
                         const fetchOptions = { method: 'POST' };
                         if (server === 'comfyui' && action === 'start') {
                             fetchOptions.headers = { 'Content-Type': 'application/json' };
                             fetchOptions.body = JSON.stringify(this.comfySettings);
+                        }
+                        if (server === 'comfyui' && action === 'stop') {
+                            fetchOptions.headers = { ...(fetchOptions.headers || {}), 'X-ComfyUI-Stop-Confirm': 'confirmed' };
                         }
                         const res = await fetch(`/api/${({ bot: 'bot', watcher: 'watcher', comfyui: 'comfy', llamacpp: 'llama' }[server] || server)}/${action}`, fetchOptions);
                         if (!res.ok) throw new Error(await res.text());
@@ -1151,6 +1339,7 @@
                 
                 async startLlama() {
                     if (!this.config.version) return alert("Select Engine Version first.");
+                    if (!this.validateLlamaConfig()) return;
                     let headers = { 'Content-Type': 'application/json' };
 
                     this.loading.llamacpp = true;
@@ -1395,7 +1584,9 @@
                         if (Object.keys(lastRunData).length > 0) {
                             this.config = { ...this.config, ...lastRunData };
                             if(this.config.reasoningBudget === undefined) this.config.reasoningBudget = "";
+                            if(this.config.reasoningMode === undefined) this.config.reasoningMode = "auto";
                             if(this.config.ngl === undefined) this.config.ngl = "auto";
+                            if(this.config.fitTarget === undefined) this.config.fitTarget = "1024";
                             if(this.config.nPredict === undefined) this.config.nPredict = "-1";
                             if(this.config.parallel === undefined) this.config.parallel = "1";
                             if(this.config.threads === undefined) this.config.threads = "";
@@ -1407,6 +1598,8 @@
                             if(this.config.specDraftPMin === undefined) this.config.specDraftPMin = "";
                             if(this.config.specDraftNgl === undefined) this.config.specDraftNgl = "";
                             if(this.config.specDraftDevice === undefined) this.config.specDraftDevice = "";
+                            if(!this.config.optionalArgs || typeof this.config.optionalArgs !== 'object') this.config.optionalArgs = {};
+                            if(!Array.isArray(this.config.gpuDevices)) this.config.gpuDevices = this.config.device ? [this.config.device] : [];
                         }
                     } catch (e) {}
                 }
@@ -1417,6 +1610,8 @@
                 await this.loadLlamaSettings();
                 await this.fetchMemo();
                 await this.fetchComfySettings();
+                await this.fetchGpuTopology();
+                await this.fetchAutoStart();
                 this.fetchScanData();
                 this.fetchStatus();
                 this.fetchHardware();
@@ -1424,6 +1619,7 @@
                 setInterval(() => {
                     this.fetchStatus();
                     this.fetchHardware();
+                    this.fetchGpuTopology();
                 }, 2000);
             }
         }).mount('#app');

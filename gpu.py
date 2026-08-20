@@ -5,6 +5,8 @@ import subprocess
 import threading
 import time
 
+import psutil
+
 IS_WINDOWS = os.name == "nt"
 
 GPU_SERVICE_LABELS = {
@@ -37,13 +39,32 @@ def _nvml_backend():
             util = pynvml.nvmlDeviceGetUtilizationRates(h)
             temp = pynvml.nvmlDeviceGetTemperature(h, pynvml.NVML_TEMPERATURE_GPU)
             power = None
+            power_max = None
             try:
                 power = pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
             except Exception:
                 pass
+            try:
+                power_max = pynvml.nvmlDeviceGetEnforcedPowerLimit(h) / 1000.0
+            except Exception:
+                pass
+            try:
+                uuid = pynvml.nvmlDeviceGetUUID(h)
+                if isinstance(uuid, bytes):
+                    uuid = uuid.decode("utf-8", errors="replace")
+            except Exception:
+                uuid = str(i)
+            try:
+                pci = pynvml.nvmlDeviceGetPciInfo(h).busId
+                if isinstance(pci, bytes):
+                    pci = pci.decode("utf-8", errors="replace")
+            except Exception:
+                pci = ""
             gpus.append(
                 {
                     "index": i,
+                    "uuid": str(uuid),
+                    "pci_bus_id": str(pci),
                     "name": name,
                     "vendor": "nvidia",
                     "vram_total": mem.total // 1048576,
@@ -53,7 +74,7 @@ def _nvml_backend():
                     "mem_util": round(mem.used * 100 / mem.total, 1) if mem.total else 0,
                     "temp": temp,
                     "power": power,
-                    "power_max": None,
+                    "power_max": power_max,
                 }
             )
     except Exception:
@@ -65,30 +86,32 @@ def _nvidia_smi_backend():
     out = _run(
         [
             "nvidia-smi",
-            "--query-gpu=index,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit",
+            "--query-gpu=index,uuid,pci.bus_id,name,memory.total,memory.used,memory.free,utilization.gpu,temperature.gpu,power.draw,power.limit",
             "--format=csv,noheader,nounits",
         ]
     )
     gpus = []
     for line in out.strip().splitlines():
         p = [x.strip() for x in line.split(",")]
-        if len(p) < 8:
+        if len(p) < 11:
             continue
         try:
-            total, used = int(p[2]), int(p[3])
+            total, used = int(p[4]), int(p[5])
             gpus.append(
                 {
                     "index": int(p[0]),
-                    "name": p[1],
+                    "uuid": p[1],
+                    "pci_bus_id": p[2],
+                    "name": p[3],
                     "vendor": "nvidia",
                     "vram_total": total,
                     "vram_used": used,
-                    "vram_free": int(p[4]),
-                    "util": int(p[5]),
+                    "vram_free": int(p[6]),
+                    "util": int(p[7]),
                     "mem_util": round(used * 100 / total, 1) if total else 0,
-                    "temp": int(p[6]),
-                    "power": float(p[7]) if p[7] else None,
-                    "power_max": float(p[8]) if p[8] else None,
+                    "temp": int(p[8]),
+                    "power": float(p[9]) if p[9] not in {"", "N/A", "[N/A]"} else None,
+                    "power_max": float(p[10]) if p[10] not in {"", "N/A", "[N/A]"} else None,
                 }
             )
         except ValueError:
@@ -106,17 +129,15 @@ def get_gpus():
 
 def get_gpu_topology():
     gpus = get_gpus()
-    services = [
-        {
-            "name": k,
-            "label": v["label"],
-            "color": v["color"],
-            "device": None,
-            "running": False,
-        }
-        for k, v in GPU_SERVICE_LABELS.items()
-    ]
-    return {"gpus": gpus, "services": services}
+    processes = scan_vram_processes()
+    by_uuid = {gpu.get("uuid"): gpu for gpu in gpus}
+    for gpu in gpus:
+        gpu["processes"] = []
+    for process in processes:
+        gpu = by_uuid.get(process.get("gpu_uuid"))
+        if gpu is not None:
+            gpu["processes"].append(process)
+    return {"available": bool(gpus), "gpus": gpus, "processes": processes}
 
 
 def parse_llama_offload(log_path):
@@ -127,6 +148,12 @@ def parse_llama_offload(log_path):
             lines = f.readlines()
     except Exception:
         return {}
+
+    # 로그는 실행 간 누적되므로 마지막 시작 구간만 현재 프로세스 정보로 취급합니다.
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].startswith("=====") and "시작:" in lines[index]:
+            lines = lines[index:]
+            break
 
     result = {}
     for line in lines:
@@ -143,7 +170,39 @@ def parse_llama_offload(log_path):
         m = re.search(r"offload\s+(\d+)\s+repeat\s+layers", line)
         if m:
             result["repeat_layers"] = int(m.group(1))
+        m = re.search(r"CUDA\d+ model buffer size\s*=\s*([\d.]+)\s*MiB", line)
+        if m:
+            result["gpu_model_buffer_gb"] = round(result.get("gpu_model_buffer_gb", 0) + float(m.group(1)) / 1024, 2)
+        m = re.search(r"CPU(?:_Mapped)? model buffer size\s*=\s*([\d.]+)\s*MiB", line)
+        if m:
+            result["cpu_model_buffer_gb"] = round(result.get("cpu_model_buffer_gb", 0) + float(m.group(1)) / 1024, 2)
     return result
+
+
+def _classify_process(pid, process_name=""):
+    try:
+        proc = psutil.Process(int(pid))
+        for _ in range(6):
+            name = (proc.name() or process_name or "").lower()
+            try:
+                command = " ".join(proc.cmdline()).lower()
+            except (psutil.AccessDenied, psutil.ZombieProcess):
+                command = ""
+            if "llama-server" in name or "llama-server" in command:
+                return "llama"
+            if "main.py" in command and "comfyui" in command:
+                return "comfyui"
+            if "telegram" in command or "comfy_bridge" in command:
+                return "bot"
+            if "watcher" in command:
+                return "watcher"
+            parent = proc.parent()
+            if parent is None:
+                break
+            proc = parent
+    except (ValueError, psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        pass
+    return "other"
 
 
 def scan_vram_processes():
@@ -163,5 +222,19 @@ def scan_vram_processes():
         p = [x.strip() for x in line.split(",")]
         if len(p) < 4:
             continue
-        procs.append({"gpu_uuid": p[0], "pid": p[1], "used_mb": p[2], "name": p[3]})
+        service = _classify_process(p[1], p[3])
+        label = GPU_SERVICE_LABELS.get(service, {"label": "Other"})["label"]
+        try:
+            used_mb = int(p[2])
+        except ValueError:
+            used_mb = None
+        procs.append({
+            "gpu_uuid": p[0],
+            "pid": int(p[1]),
+            "used_mb": used_mb,
+            "vram_used_gb": round(used_mb / 1024, 2) if used_mb is not None else None,
+            "name": p[3],
+            "service": service,
+            "service_label": label,
+        })
     return procs

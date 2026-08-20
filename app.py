@@ -12,7 +12,7 @@ from pathlib import Path
 import psutil
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse
 
 import requests
 
@@ -28,6 +28,7 @@ from media import router as media_router
 from dataset_api import router as dataset_router
 from vast_api import router as vast_router
 from process_mgr import Service, find_process, tail
+from llama_vram_guard import run_guard
 
 HOST = "0.0.0.0"
 PORT = 8999
@@ -38,6 +39,8 @@ COMYFUI_SETTINGS_FILE = os.path.join(BASE_DIR, "comfyui_settings.json")
 HW_HISTORY_FILE = os.path.join(BASE_DIR, "hw_history.json")
 LAST_RUN_FILE = os.path.join(BASE_DIR, "last_run.json")
 LLAMA_SETTINGS_FILE = os.path.join(BASE_DIR, "llama_settings.json")
+LLAMA_PUBLIC_PORT = int(settings.get("llama_port") or 8080)
+LLAMA_BACKEND_PORT = 8082
 
 services = {
     "comfyui": Service("comfyui"),
@@ -100,16 +103,59 @@ def load_comfy_settings():
 
 def save_comfy_settings(data):
     merged = {
+        "listen": True,
         "use_sage_attention": False,
         "preview_method_none": True,
         "cache_none": False,
-        "reserve_vram_1": True,
+        "reserve_vram_enabled": True,
+        "reserve_vram": 1.0,
         "disable_async_offload": False,
         "fast_disk": False,
+        "fast_fp16_accumulation": True,
+        "gpu_device": "",
     }
-    merged.update({k: bool(v) for k, v in data.items() if k in merged})
+    existing = load_comfy_settings()
+    if "reserve_vram_enabled" not in existing and "reserve_vram_1" in existing:
+        existing["reserve_vram_enabled"] = bool(existing.get("reserve_vram_1"))
+        existing["reserve_vram"] = 1.0
+    merged.update({k: existing[k] for k in merged if k in existing})
+    for key in (
+        "listen", "use_sage_attention", "preview_method_none", "cache_none", "reserve_vram_enabled",
+        "disable_async_offload", "fast_disk", "fast_fp16_accumulation",
+    ):
+        if key in data:
+            merged[key] = bool(data[key])
+    if "reserve_vram" in data:
+        try:
+            merged["reserve_vram"] = max(0.0, float(data["reserve_vram"]))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "reserve_vram은 0 이상의 숫자여야 합니다")
+    if "gpu_device" in data:
+        merged["gpu_device"] = str(data.get("gpu_device") or "").strip()
     _write_json(COMYFUI_SETTINGS_FILE, merged)
     return merged
+
+
+def normalize_gpu_devices(value):
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        values = value.split(",")
+    elif isinstance(value, (list, tuple)):
+        values = value
+    else:
+        raise HTTPException(400, "GPU 선택값 형식이 잘못되었습니다")
+    result = []
+    for item in values:
+        device = str(item).strip()
+        if device and device not in result:
+            result.append(device)
+    gpus = get_gpus()
+    valid = {str(gpu.get("index")) for gpu in gpus} | {str(gpu.get("uuid")) for gpu in gpus}
+    invalid = [device for device in result if device not in valid]
+    if invalid:
+        raise HTTPException(400, f"존재하지 않는 GPU입니다: {', '.join(invalid)}")
+    return result
 
 
 # ---------- llama.cpp 설정 / 모델 스캔 ----------
@@ -191,7 +237,11 @@ def _llama_server_exe(version_dir):
 
 def scan_llama_versions():
     pat = settings.get("llama_version_glob")
-    dirs = sorted(glob.glob(pat)) if pat else []
+    dirs = sorted(
+        glob.glob(pat),
+        key=lambda path: (os.path.getmtime(path) if os.path.exists(path) else 0, os.path.basename(path).lower()),
+        reverse=True,
+    ) if pat else []
     versions = []
     for d in dirs:
         if os.path.isdir(d):
@@ -248,19 +298,29 @@ def _build_llama_cmd(preset):
     for flag, key in (
         ("--ctx-size", "ctx"),
         ("--host", "host"),
-        ("--port", "port"),
         ("-ngl", "ngl"),
         ("-n", "nPredict"),
         ("-np", "parallel"),
         ("-t", "threads"),
         ("-ctk", "cacheK"),
         ("-ctv", "cacheV"),
-        ("--reasoning-budget", "reasoningBudget"),
         ("--sleep-idle-seconds", "sleepIdleSeconds"),
     ):
         v = str(preset.get(key, "")).strip()
-        if v and v != "-1":
+        if v:
             cmd += [flag, v]
+    cmd += ["--port", str(LLAMA_BACKEND_PORT)]
+    reasoning_mode = str(preset.get("reasoningMode", "")).strip()
+    if reasoning_mode in {"on", "off"}:
+        cmd += ["--reasoning", reasoning_mode]
+    reasoning_budget = str(preset.get("reasoningBudget", "")).strip()
+    if reasoning_mode != "off" and reasoning_budget:
+        cmd += ["--reasoning-budget", reasoning_budget]
+    fit_target = str(preset.get("fitTarget", "")).strip()
+    if preset.get("fit"):
+        cmd += ["--fit", "on"]
+        if fit_target:
+            cmd += ["--fit-target", fit_target]
     spec_type = str(preset.get("specType", "")).strip()
     if spec_type:
         cmd += ["--spec-type", spec_type]
@@ -285,6 +345,36 @@ def _build_llama_cmd(preset):
             "--temp", "0.6", "--top-p", "0.95", "--top-k", "20",
             "--min-p", "0.0", "--presence-penalty", "0.0", "--repeat-penalty", "1.0",
         ]
+    optional_definitions = {
+        "batchSize": ("--batch-size", False),
+        "ubatchSize": ("--ubatch-size", False),
+        "threadsBatch": ("--threads-batch", False),
+        "loadMode": ("--load-mode", False),
+        "splitMode": ("--split-mode", False),
+        "tensorSplit": ("--tensor-split", False),
+        "mainGpu": ("--main-gpu", False),
+        "cpuMoe": ("--cpu-moe", True),
+        "cpuMoeLayers": ("--n-cpu-moe", False),
+        "cacheSwa": ("--swa-full", True),
+        "cacheReuse": ("--cache-reuse", False),
+        "serverTimeout": ("--timeout", False),
+        "httpThreads": ("--threads-http", False),
+        "metrics": ("--metrics", True),
+        "noSlots": ("--no-slots", True),
+        "noWarmup": ("--no-warmup", True),
+    }
+    optional = preset.get("optionalArgs") or {}
+    if isinstance(optional, dict):
+        for key, value in optional.items():
+            definition = optional_definitions.get(key)
+            if not definition:
+                continue
+            flag, boolean_flag = definition
+            if boolean_flag:
+                if value:
+                    cmd.append(flag)
+            elif str(value).strip():
+                cmd += [flag, str(value).strip()]
     if preset.get("flash"):
         cmd += ["--flash-attn", "on"]
     if preset.get("useTemplate"):
@@ -302,16 +392,7 @@ def _comfy_python():
 
 
 def _comfy_env():
-    env = {}
-    s = load_comfy_settings()
-    for k, flag in (
-        ("use_sage_attention", "COMFYUI_USE_SAGE_ATTENTION"),
-        ("reserve_vram_1", "COMFYUI_RESERVE_VRAM"),
-        ("fast_disk", "COMFYUI_FAST_DISK"),
-    ):
-        if s.get(k):
-            env[flag] = "1"
-    return env
+    return {"PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1", "PYTHONUNBUFFERED": "1"}
 
 
 def _comfy_args():
@@ -321,8 +402,16 @@ def _comfy_args():
         args += ["--preview-method", "none"]
     if s.get("cache_none"):
         args += ["--cache-none"]
+    if s.get("use_sage_attention"):
+        args += ["--use-sage-attention"]
+    if s.get("reserve_vram_enabled"):
+        args += ["--reserve-vram", str(s.get("reserve_vram", 1.0))]
     if s.get("disable_async_offload"):
-        args += ["--disable-async-unload"]
+        args += ["--disable-async-offload"]
+    if s.get("fast_disk"):
+        args += ["--fast-disk"]
+    if s.get("fast_fp16_accumulation"):
+        args += ["--fast", "fp16_accumulation"]
     return args
 
 
@@ -463,6 +552,7 @@ def status():
         "llama_versions": STATE["llama_versions"],
         "gguf_models": STATE["gguf_models"],
         "settings": settings.all() if not IS_WINDOWS else {},
+        "llama_ports": {"public": LLAMA_PUBLIC_PORT, "backend": LLAMA_BACKEND_PORT},
         "last_run": _read_json(LAST_RUN_FILE, {}),
     }
 
@@ -470,22 +560,41 @@ def status():
 @app.get("/api/gpus")
 def gpus():
     topo = get_gpu_topology()
-    topo["processes"] = scan_vram_processes()
-    topo["services"] = [
-        {
-            "name": k,
-            "label": v["label"],
-            "color": v["color"],
-            "device": services[k].device,
-            "running": _service_state(k)["running"],
-        }
-        for k, v in {
+    processes = topo.get("processes", [])
+    index_by_uuid = {gpu.get("uuid"): gpu.get("index") for gpu in topo.get("gpus", [])}
+    def configured_devices(value):
+        if value in (None, ""):
+            return []
+        values = value.split(",") if isinstance(value, str) else value
+        return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+
+    comfy_saved = load_comfy_settings()
+    last_run = _read_json(LAST_RUN_FILE, {})
+    configured = {
+        "comfyui": configured_devices([comfy_saved.get("gpu_device")]),
+        "llama": configured_devices(last_run.get("gpuDevices") or last_run.get("device") or []),
+        "bot": configured_devices(services["bot"].device or []),
+        "watcher": configured_devices(services["watcher"].device or []),
+    }
+    service_defs = {
             "comfyui": {"label": "ComfyUI", "color": "amber"},
             "llama": {"label": "llama.cpp", "color": "sky"},
             "bot": {"label": "봇", "color": "emerald"},
             "watcher": {"label": "와처", "color": "violet"},
-        }.items()
-    ]
+    }
+    topo["services"] = {}
+    for name, definition in service_defs.items():
+        owned = [process for process in processes if process.get("service") == name]
+        active = sorted({index_by_uuid.get(process.get("gpu_uuid")) for process in owned} - {None})
+        topo["services"][name] = {
+            "name": name,
+            **definition,
+            "configured_devices": configured[name],
+            "active_gpu_indexes": active,
+            "vram_used_gb": round(sum(process.get("vram_used_gb") or 0 for process in owned), 2),
+            "running": _service_state(name)["running"],
+        }
+    topo["services"]["llama"]["offload"] = parse_llama_offload(services["llama"].log_file)
     return topo
 
 
@@ -515,13 +624,20 @@ def llama_presets_save(presets: dict):
 @app.post("/api/llama/start")
 def llama_start(preset: dict):
     cmd = _build_llama_cmd(preset)
-    device = preset.get("device") or None
-    pid = services["llama"].start(cmd, device=device)
+    devices = normalize_gpu_devices(preset.get("gpuDevices") or preset.get("device") or [])
+    pid = services["llama"].start(cmd, device=devices or None)
     _write_json(
         LAST_RUN_FILE,
-        {"version": _resolve_llama_binary(preset)[1] or "", **preset, "device": device},
+        {"version": _resolve_llama_binary(preset)[1] or "", **preset, "gpuDevices": devices, "device": ""},
     )
-    return {"ok": True, "pid": pid, "cmd": cmd}
+    return {
+        "ok": True,
+        "pid": pid,
+        "cmd": cmd,
+        "public_url": f"http://127.0.0.1:{LLAMA_PUBLIC_PORT}",
+        "backend_url": f"http://127.0.0.1:{LLAMA_BACKEND_PORT}",
+        "gpu_devices": devices,
+    }
 
 
 @app.post("/api/llama/stop")
@@ -544,61 +660,26 @@ def llama_settings_save(values: dict):
     return save_llama_settings(values)
 
 
-# ---------- llama.cpp VRAM 가드 프록시 (8082) ----------
-# JH 노드(JH llama.cpp Prompt)가 8082로 호출하면,
-# 토글(vram_cleanup_enabled)이 켜져 있으면 ComfyUI /free API로
-# VRAM을 해제한 뒤 실제 llama-server(8080)로 요청을 전달한다.
-# -> 단일 GPU에서 ComfyUI 모델 <-> LLM 모델 로드/언로드.
-
-LLAMA_GUARD_PORT = 8082
-COMFY_FREE_URL = f"http://127.0.0.1:{settings.get('comfyui_port') or 8188}/free"
-guard_app = FastAPI(title="llama vram guard", docs_url=None, redoc_url=None)
-
-
-def _comfy_free_vram():
-    """ComfyUI VRAM 클리너 API 호출 (모델 언로드 + 메모리 해제)"""
-    try:
-        r = requests.post(
-            COMFY_FREE_URL,
-            json={"unload_models": True, "free_memory": True},
-            timeout=15,
-        )
-        print(f"[llama vram guard] ComfyUI /free -> {r.status_code}")
-        return r.status_code == 200
-    except Exception as e:
-        print(f"[llama vram guard] ComfyUI /free 실패: {e}")
-        return False
-
-
-@guard_app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
-async def llama_vram_guard_proxy(path: str, request: Request):
-    # 매 요청마다 최신 설정을 읽어서 UI 토글 변경이 즉시 반영된다
-    if load_llama_settings().get("vram_cleanup_enabled"):
-        _comfy_free_vram()
-    target = f"http://127.0.0.1:{settings.get('llama_port') or 8080}/{path}"
-    body = await request.body()
-    fwd_headers = {k: v for k, v in request.headers.items()
-                   if k.lower() not in ("host", "content-length")}
-    try:
-        r = requests.request(request.method, target, data=body,
-                             headers=fwd_headers,
-                             params=dict(request.query_params),
-                             timeout=600)
-    except Exception as e:
-        return JSONResponse({"error": f"llama-server 접근 실패: {e}"}, status_code=502)
-    out_headers = {k: v for k, v in r.headers.items()
-                   if k.lower() not in ("content-encoding", "content-length", "transfer-encoding")}
-    return Response(content=r.content, status_code=r.status_code, headers=out_headers)
+# ---------- llama.cpp VRAM 가드 ----------
+# 사람/웹 UI는 공개 포트 8080을 사용합니다. 가드는 ComfyUI 작업이 끝날
+# 때까지 기다린 뒤 VRAM을 비우고 내부 llama-server(8082)로 전달합니다.
+# ComfyUI 커스텀 노드는 8082를 직접 호출해 자기 자신을 기다리는 교착을 피합니다.
 
 
 def _run_guard_server():
     try:
-        uvicorn.run(guard_app, host="0.0.0.0", port=LLAMA_GUARD_PORT, log_level="warning")
-    except Exception as e:
-        print(f"[llama vram guard] {LLAMA_GUARD_PORT} 서버 시작 실패: {e}")
+        run_guard(
+            host="0.0.0.0",
+            port=LLAMA_PUBLIC_PORT,
+            backend_port=LLAMA_BACKEND_PORT,
+            comfy_port=int(settings.get("comfyui_port") or 8188),
+            settings_file=LLAMA_SETTINGS_FILE,
+        )
+    except Exception as error:
+        print(f"[llama vram guard] {LLAMA_PUBLIC_PORT} 서버 시작 실패: {error}")
 
 
-threading.Thread(target=_run_guard_server, daemon=True).start()
+_guard_thread = None
 
 
 @app.get("/api/llama/scan")
@@ -803,31 +884,37 @@ def llama_model_download(url: str = "", name: str = ""):
 # ---------- ComfyUI ----------
 
 @app.post("/api/comfy/start")
-def comfy_start(device: str = ""):
+def comfy_start(data: dict | None = None):
+    if data:
+        saved = save_comfy_settings(data)
+    else:
+        saved = save_comfy_settings({})
     comfy_dir = settings.get("comfyui_dir")
     if not comfy_dir or not os.path.isdir(comfy_dir):
         raise HTTPException(400, f"ComfyUI 폴더가 없습니다: {comfy_dir}")
     cmd = [
         _comfy_python(),
         "main.py",
-        "--listen",
-        "0.0.0.0",
         "--port",
         str(settings.get("comfyui_port")),
     ]
+    if saved.get("listen"):
+        cmd += ["--listen", "0.0.0.0"]
     cmd += _comfy_args()
-    pid = services["comfyui"].start(cmd, cwd=comfy_dir, env=_comfy_env(), device=device or None)
-    return {"ok": True, "pid": pid, "cmd": cmd}
+    devices = normalize_gpu_devices([saved.get("gpu_device")]) if saved.get("gpu_device") else []
+    pid = services["comfyui"].start(cmd, cwd=comfy_dir, env=_comfy_env(), device=devices or None)
+    return {"ok": True, "pid": pid, "cmd": cmd, "gpu_devices": devices}
 
 
 @app.post("/api/comfy/stop")
-def comfy_stop():
+def comfy_stop(request: Request):
+    _require_comfy_confirmation(request)
     return {"ok": services["comfyui"].stop()}
 
 
 @app.get("/api/comfy/settings")
 def comfy_settings_get():
-    return load_comfy_settings()
+    return save_comfy_settings({})
 
 
 @app.post("/api/comfy/settings")
@@ -967,8 +1054,18 @@ def linux_settings_save(data: dict):
     return {"ok": True, "effective": effective}
 
 
+COMFY_CONFIRM_HEADER = "x-comfyui-stop-confirm"
+
+
+def _require_comfy_confirmation(request: Request):
+    if request.headers.get(COMFY_CONFIRM_HEADER, "").lower() != "confirmed":
+        raise HTTPException(409, "ComfyUI 종료 확인이 필요합니다")
+
+
 @app.post("/api/panic")
-def panic():
+def panic(request: Request):
+    if _service_state("comfyui")["running"]:
+        _require_comfy_confirmation(request)
     results = {}
     for name, svc in services.items():
         results[name] = svc.stop()
@@ -976,9 +1073,11 @@ def panic():
 
 
 @app.post("/api/force_kill/{server}")
-def force_kill(server: str):
+def force_kill(server: str, request: Request):
     if server not in services:
         raise HTTPException(404, f"알 수 없는 서비스: {server}")
+    if server == "comfyui":
+        _require_comfy_confirmation(request)
     return {"ok": services[server].force_kill()}
 
 
@@ -1075,11 +1174,16 @@ def _ensure_files():
                     "cacheV": "q4_0",
                     "tempMode": "general",
                     "useTemplate": False,
+                    "reasoningMode": "auto",
                     "reasoningBudget": "",
                     "ngl": "999",
+                    "fitTarget": "1024",
                     "nPredict": "-1",
                     "parallel": "1",
                     "threads": "",
+                    "sleepIdleSeconds": "-1",
+                    "optionalArgs": {},
+                    "gpuDevices": [],
                     "device": "",
                 }
             }
@@ -1093,10 +1197,18 @@ def _ensure_files():
 
 @app.on_event("startup")
 def startup():
+    global _guard_thread
     _ensure_files()
     scan_llama_versions()
     scan_gguf_models()
     _sample_hw()
+    if _guard_thread is None or not _guard_thread.is_alive():
+        _guard_thread = threading.Thread(
+            target=_run_guard_server,
+            name="llama-vram-guard",
+            daemon=True,
+        )
+        _guard_thread.start()
     if settings.get("autostart"):
         try:
             _auto_start_services()
@@ -1117,10 +1229,13 @@ def _auto_start_services():
             continue
         try:
             if name == "llama":
-                presets = load_presets()
-                if presets:
-                    first = sorted(presets.keys())[0]
-                    services["llama"].start(_build_llama_cmd(presets[first]))
+                launch = _read_json(LAST_RUN_FILE, {})
+                if not launch:
+                    presets = load_presets()
+                    launch = presets[sorted(presets.keys())[0]] if presets else {}
+                if launch:
+                    devices = normalize_gpu_devices(launch.get("gpuDevices") or launch.get("device") or [])
+                    services["llama"].start(_build_llama_cmd(launch), device=devices or None)
             elif name == "comfyui":
                 comfy_start()
             elif name == "bot":
@@ -1130,10 +1245,7 @@ def _auto_start_services():
         except Exception:
             pass
     if not any_set:
-        presets = load_presets()
-        if presets:
-            first = sorted(presets.keys())[0]
-            services["llama"].start(_build_llama_cmd(presets[first]))
+        return
 
 
 if __name__ == "__main__":
