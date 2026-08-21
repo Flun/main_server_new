@@ -1,0 +1,2 @@
+# main_server may only start/stop the display manager through this helper.
+flux ALL=(root) NOPASSWD: /usr/local/sbin/main-server-desktop-toggle *

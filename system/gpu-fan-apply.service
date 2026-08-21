@@ -1,0 +1,11 @@
+[Unit]
+Description=Re-apply saved NVIDIA GPU fan settings after graphical login
+PartOf=graphical-session.target
+After=graphical-session-pre.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/sudo -n /usr/local/sbin/main-server-gpu-control apply
+
+[Install]
+WantedBy=graphical-session.target

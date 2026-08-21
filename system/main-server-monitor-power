@@ -1,0 +1,161 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+DDCUTIL=/usr/bin/ddcutil
+STATE_FILE=/run/main-server-monitor-power.state
+XAUTHORITY_FILE=/run/user/1000/gdm/Xauthority
+
+die() { echo "$*" >&2; exit 2; }
+
+find_display() {
+  local socket candidate
+  for socket in /tmp/.X11-unix/X*; do
+    [[ -S "$socket" ]] || continue
+    candidate=":${socket##*X}"
+    if DISPLAY="$candidate" XAUTHORITY="$XAUTHORITY_FILE" xrandr --query >/dev/null 2>&1; then
+      printf '%s' "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+detect_buses() {
+  "$DDCUTIL" detect --brief 2>/dev/null |
+    awk '/I2C bus:/ { sub("/dev/i2c-", "", $3); if ($3 ~ /^[0-9]+$/) print $3 }'
+}
+
+status() {
+  local state=on count=0
+  if [[ -r "$STATE_FILE" ]]; then
+    read -r state count _ <"$STATE_FILE" || true
+  fi
+  if [[ ! "$count" =~ ^[0-9]+$ ]] || (( count == 0 )); then
+    count=$(detect_buses | wc -l)
+    printf 'on %s\n' "$count" >"$STATE_FILE"
+    chmod 0644 "$STATE_FILE"
+    state=on
+  fi
+  if (( count == 0 )); then
+    echo "unavailable unknown 0"
+  else
+    [[ "$state" == off ]] || state=on
+    echo "available $state $count"
+  fi
+}
+
+power_off() {
+  local bus successes=0
+  mapfile -t buses < <(detect_buses)
+  ((${#buses[@]} > 0)) || die "DDC/CI 모니터를 찾지 못했습니다"
+  for bus in "${buses[@]}"; do
+    if "$DDCUTIL" getvcp D6 --bus "$bus" >/dev/null 2>&1 &&
+       "$DDCUTIL" setvcp D6 04 --bus "$bus" --noverify >/dev/null 2>&1; then
+      ((successes += 1))
+    fi
+  done
+  (( successes > 0 )) || die "모니터 전원 끄기 명령을 적용하지 못했습니다"
+  # Retain the bus numbers as a recovery hint. Some panels disappear from
+  # ddcutil's live detection after entering VCP D6 sleep.
+  printf 'off %s %s\n' "$successes" "${buses[*]}" >"$STATE_FILE"
+  chmod 0644 "$STATE_FILE"
+  echo "off $successes"
+}
+
+power_on() {
+  local display= output line mode geometry x y rate primary_arg entry
+  local successes=0 restored=0 cached_state cached_count cached_buses
+
+  # Wake through DDC first. Unlike xrandr, this path also works after GDM/X11
+  # has been stopped for compute mode.
+  mapfile -t buses < <(detect_buses)
+  if ((${#buses[@]} == 0)) && [[ -r "$STATE_FILE" ]]; then
+    read -r cached_state cached_count cached_buses <"$STATE_FILE" || true
+    read -r -a buses <<<"${cached_buses:-}"
+  fi
+  for attempt in 1 2 3; do
+    for bus in "${buses[@]}"; do
+      [[ "$bus" =~ ^[0-9]+$ ]] || continue
+      if "$DDCUTIL" setvcp D6 01 --bus "$bus" --noverify >/dev/null 2>&1; then
+        ((successes += 1))
+      fi
+    done
+    (( successes > 0 )) && break
+    # In text mode, selecting VT1 retriggers the active DRM console signal.
+    systemctl start getty@tty1.service >/dev/null 2>&1 || true
+    chvt 1 >/dev/null 2>&1 || true
+    sleep 1
+    mapfile -t buses < <(detect_buses)
+  done
+
+  # If a live X11 session exists, cycle its outputs too. This is an optional
+  # recovery assist for LG DisplayPort panels, never a prerequisite for wake.
+  if display=$(find_display); then
+    mapfile -t outputs < <(
+      DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" xrandr --query |
+        awk '$2 == "connected" && $1 ~ /^(DP|HDMI)-/ { print $1 }'
+    )
+  else
+    outputs=()
+  fi
+
+  # Save each active output before cycling DisplayPort. DDC may be unreachable
+  # while an LG panel is powered down, but a signal cycle wakes it again.
+  declare -a restore_commands=()
+  for output in "${outputs[@]}"; do
+    line=$(DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" xrandr --query | awk -v name="$output" '$1 == name && $2 == "connected" { print; exit }')
+    geometry=$(grep -oE '[0-9]+x[0-9]+\+[0-9]+\+[0-9]+' <<<"$line" | head -n1 || true)
+    [[ -n "$geometry" ]] || continue
+    mode=${geometry%%+*}; x=${geometry#*+}; x=${x%%+*}; y=${geometry##*+}
+    rate=$(DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" xrandr --query |
+      awk -v name="$output" '$1 == name { found=1; next } found && $1 ~ /^[0-9]+x[0-9]+$/ { for (i=2; i<=NF; i++) if ($i ~ /\*/) { gsub(/[+*]/, "", $i); print $i; exit } } found && $1 !~ /^[[:space:]]/ { exit }')
+    primary_arg=; [[ "$line" == *" primary "* ]] && primary_arg=--primary
+    restore_commands+=("$output|$mode|$rate|${x}x${y}|$primary_arg")
+  done
+  for entry in "${restore_commands[@]}"; do
+    IFS='|' read -r output mode rate geometry primary_arg <<<"$entry"
+    DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" xrandr --output "$output" --off
+    sleep 0.5
+    command=(xrandr --output "$output" --mode "$mode" --pos "$geometry")
+    [[ -n "$rate" ]] && command+=(--rate "$rate")
+    [[ -n "$primary_arg" ]] && command+=("$primary_arg")
+    DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" "${command[@]}"
+    ((restored += 1))
+    sleep 0.5
+  done
+
+  # Reapply the complete saved layout after GNOME has reacted to each cycle.
+  if ((${#restore_commands[@]} > 0)); then
+    command=(xrandr)
+    for entry in "${restore_commands[@]}"; do
+      IFS='|' read -r output mode rate geometry primary_arg <<<"$entry"
+      command+=(--output "$output" --mode "$mode" --pos "$geometry")
+      [[ -n "$rate" ]] && command+=(--rate "$rate")
+      [[ -n "$primary_arg" ]] && command+=("$primary_arg")
+    done
+    DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" "${command[@]}"
+  fi
+
+  # A signal cycle may make additional DDC buses visible, so issue wake once
+  # more without requiring a readable X display.
+  mapfile -t buses < <(detect_buses)
+  for bus in "${buses[@]}"; do
+    if "$DDCUTIL" setvcp D6 01 --bus "$bus" --noverify >/dev/null 2>&1; then
+      ((successes += 1))
+    fi
+  done
+  (( successes > 0 || restored > 0 )) || die "모니터 깨우기 명령을 적용하지 못했습니다"
+  local count=${#buses[@]}
+  (( count > 0 )) || count=${#restore_commands[@]}
+  (( count > 0 )) || count=1
+  printf 'on %s %s\n' "$count" "${buses[*]}" >"$STATE_FILE"
+  chmod 0644 "$STATE_FILE"
+  echo "on $count"
+}
+
+case "${1:-status}" in
+  status) status ;;
+  off) power_off ;;
+  on) power_on ;;
+  *) die "사용법: $0 status|off|on" ;;
+esac

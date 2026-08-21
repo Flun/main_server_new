@@ -7,6 +7,7 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 SETTINGS_FILE = os.path.join(BASE_DIR, "linux_settings.json")
 
 DEFAULTS = {
+    "server_root": "/home/flux",
     "comfyui_dir": "/opt/ComfyUI",
     "comfyui_python": "/opt/ComfyUI/venv/bin/python",
     "comfyui_port": "8188",
@@ -14,6 +15,9 @@ DEFAULTS = {
     "llama_version_glob": "/opt/llama-*",
     "llama_port": "8080",
     "model_root": "/mnt/model",
+    "vllm_env": "/home/flux/vllm-env",
+    "vllm_dflash_env": "/home/flux/vllm-dflash-env",
+    "vllm_port": "8000",
     "bot_dir": "/opt/comfy_bridge",
     "watcher_dir": "/home/flux/Documents/New project",
     "autostart": False,
@@ -21,9 +25,11 @@ DEFAULTS = {
     "autostart_comfyui": False,
     "autostart_bot": False,
     "autostart_watcher": False,
+    "autostart_vllm": False,
 }
 
 ENV_MAP = {
+    "server_root": "SERVER_ROOT",
     "comfyui_dir": "COMFY_DIR",
     "comfyui_python": "COMFY_PYTHON",
     "comfyui_port": "COMFY_PORT",
@@ -31,6 +37,9 @@ ENV_MAP = {
     "llama_version_glob": "LLAMA_VERSION_GLOB",
     "llama_port": "LLAMA_PORT",
     "model_root": "MODEL_ROOT",
+    "vllm_env": "VLLM_ENV",
+    "vllm_dflash_env": "VLLM_DFLASH_ENV",
+    "vllm_port": "VLLM_PORT",
     "bot_dir": "BOT_DIR",
     "watcher_dir": "WATCHER_DIR",
     "autostart": "AUTOSTART",
@@ -38,6 +47,7 @@ ENV_MAP = {
     "autostart_comfyui": "AUTOSTART_COMFYUI",
     "autostart_bot": "AUTOSTART_BOT",
     "autostart_watcher": "AUTOSTART_WATCHER",
+    "autostart_vllm": "AUTOSTART_VLLM",
 }
 
 

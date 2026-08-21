@@ -79,6 +79,23 @@
                 <a href="/media" class="px-3 py-2 text-sm font-medium border border-pink-500/30 bg-pink-500/10 hover:bg-pink-500/20 text-pink-300 rounded-lg transition shadow-sm">Media Studio</a>
                 <a href="/dataset" class="px-3 py-2 text-sm font-medium border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition shadow-sm">Dataset</a>
                 <a href="/vast" class="px-3 py-2 text-sm font-medium border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 rounded-lg transition shadow-sm">Vast Remote</a>
+                <a href="/infrastructure" class="px-3 py-2 text-sm font-medium border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 rounded-lg transition shadow-sm">통합 환경</a>
+                <button @click="toggleDesktopMode" :disabled="!desktop.available || desktop.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-40" :class="desktop.mode === 'gui' ? 'bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20' : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20'" :title="desktop.switching ? '전환 중...' : 'GUI/CLI 전환 (원격에서도 가능)'">
+                    <svg v-if="!desktop.switching" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
+                    <svg v-else class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                    <span v-if="desktop.switching">전환 중...</span>
+                    <span v-else-if="desktop.mode === 'gui'">컴퓨트 모드 전환</span>
+                    <span v-else-if="desktop.mode === 'cli'">GUI 모드 전환</span>
+                    <span v-else>데스크톱 모드</span>
+                </button>
+                <button @click="setMonitorPower('off')" :disabled="monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-sky-500/10 border border-sky-500/25 text-sky-300 hover:bg-sky-500/20" title="현재 상태와 관계없이 DDC/CI 끄기 명령을 강제로 전송">
+                    <span v-if="monitorPower.switching === 'off'">끄는 중...</span>
+                    <span v-else>물리 모니터 강제 끄기</span>
+                </button>
+                <button @click="setMonitorPower('on')" :disabled="monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
+                    <span v-if="monitorPower.switching === 'on'">켜는 중...</span>
+                    <span v-else>물리 모니터 강제 켜기</span>
+                </button>
                 <button @click="restartManager" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 hover:border-zinc-600 rounded-lg text-zinc-300 shadow-sm">
                     Restart Manager
                 </button>
@@ -198,7 +215,7 @@
                 </div>
             </div>
             <div v-if="gpuTopology.available" class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
-                <div v-for="key in ['comfyui','llama']" :key="key" class="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs">
+                <div v-for="key in ['comfyui','llama','vllm']" :key="key" class="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs">
                     <div class="flex justify-between"><span class="font-semibold">{{ gpuTopology.services[key]?.label }}</span><span class="font-mono text-amber-300">{{ gpuTopology.services[key]?.vram_used_gb || 0 }} GB</span></div>
                     <div class="mt-2 text-[11px] text-zinc-500">지정: {{ (gpuTopology.services[key]?.configured_devices || []).join(', ') || '모든 GPU' }} · 실사용: {{ (gpuTopology.services[key]?.active_gpu_indexes || []).map(i => 'GPU '+i).join(', ') || '없음' }}</div>
                     <div v-if="key === 'llama' && gpuTopology.services[key]?.offload" class="mt-1 text-[11px] text-zinc-500">오프로딩 {{ gpuTopology.services[key].offload.layers_offloaded ?? '?' }}/{{ gpuTopology.services[key].offload.layers_total ?? '?' }} layers · GPU buffer {{ gpuTopology.services[key].offload.gpu_model_buffer_gb ?? '?' }} GB · RAM buffer {{ gpuTopology.services[key].offload.cpu_model_buffer_gb ?? '?' }} GB</div>
@@ -209,11 +226,11 @@
                     <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 <span class="font-mono">gpu-tune.service</span>에 저장되어 다음 부팅에도 유지됩니다.</p><p class="mt-1 text-[11px] text-amber-500/80">현재 방식은 전압점 고정이 아니라 Power Limit + 최대 클럭 제한입니다. RTX 3090 Linux 드라이버에서는 850mV 같은 목표 전압을 직접 지정하지 않습니다.</p></div>
                     <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">systemd 적용</span>
                 </div>
-                <div v-for="gpu in gpuTuning.gpus" :key="gpu.index" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
-                    <div><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.name }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · {{ gpu.clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
+                <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
+                    <div><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.name }}</div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · {{ gpu.clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
                     <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" class="input-base mt-1 w-full text-right"></label>
                     <label class="text-[10px] text-zinc-500">Clock cap (MHz)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" class="input-base mt-1 w-full text-right"></label>
-                    <label class="text-[10px] text-zinc-500">Fan (0–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" class="input-base mt-1 w-full text-right"></label>
+                    <label class="text-[10px] text-zinc-500">Fan (0=자동, 30–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
                     <div class="flex gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">기본값</button></div>
                 </div>
             </div>
@@ -265,7 +282,7 @@
                     <button v-if="!status.watcher" @click="controlServer('watcher', 'start')" :disabled="loading.watcher" class="w-full py-2.5 rounded-lg font-medium text-sm bg-zinc-100 text-zinc-900 hover:bg-white disabled:opacity-50 transition">Start Service</button>
                     <button v-else @click="controlServer('watcher', 'stop')" :disabled="loading.watcher" class="w-full py-2.5 rounded-lg font-medium text-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition">Stop Service</button>
                     <div class="flex gap-2">
-                        <a href="http://127.0.0.1:8888" target="_blank" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Web UI</a>
+                        <a :href="serviceUrl(8888)" target="_blank" rel="noopener noreferrer" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Web UI</a>
                         <button @click="openLogModal('watcher')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition border border-transparent">Log</button>
                         <button @click="openFolder('watcher')" class="px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition" title="Open Folder">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z"></path></svg>
@@ -319,7 +336,7 @@
                     <button v-else @click="controlServer('comfyui', 'stop')" :disabled="loading.comfyui" class="w-full py-2.5 rounded-lg font-medium text-sm border border-zinc-700 bg-zinc-800 text-zinc-300 hover:bg-zinc-700 disabled:opacity-50 transition">Stop Service</button>
                     
                     <div class="flex gap-2">
-                        <a href="http://127.0.0.1:8188" target="_blank" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Web UI</a>
+                        <a :href="serviceUrl(servicePorts.comfyui)" target="_blank" rel="noopener noreferrer" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Web UI</a>
                         <button @click="openLogModal('comfyui')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition border border-transparent">Log</button>
                         <button @click="openTerminal('comfyui')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition border border-transparent">Console</button>
                         <button @click="openFolder('comfyui')" class="px-3 py-2 rounded-lg text-xs text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition" title="Open Folder">
@@ -350,7 +367,7 @@
                     <div v-else class="text-xs text-center w-full text-zinc-500 py-2.5 border border-zinc-800 border-dashed rounded-lg bg-zinc-900/50">Configure & Launch below</div>
                     
                     <div class="flex gap-2">
-                        <a :href="`http://${config.host === '0.0.0.0' ? '127.0.0.1' : config.host}:${config.port}`" target="_blank" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Endpoint ({{config.port}})</a>
+                        <a :href="serviceUrl(servicePorts.llama)" target="_blank" rel="noopener noreferrer" class="flex-1 flex justify-center items-center py-2 rounded-lg text-xs font-medium border border-zinc-800 bg-zinc-800/50 text-indigo-300 hover:bg-zinc-800 hover:border-zinc-700 transition">Endpoint ({{servicePorts.llama}})</a>
                         <button @click="openLogModal('llamacpp')" class="flex-1 py-2 rounded-lg text-xs font-medium text-zinc-400 hover:text-zinc-200 hover:bg-zinc-800/50 transition">Log</button>
                     </div>
                 </div>
@@ -901,17 +918,18 @@
                         gpu_temp: null, gpu_hotspot: null, gpu_fan: null, gpu_power: null,
                         lhm_available: false
                     },
-                    status: { comfyui: false, llamacpp: false, telegram_bot: false, watcher: false },
-                    loading: { comfyui: false, llamacpp: false, bot: false, watcher: false, status: false },
+                    status: { comfyui: false, llamacpp: false, vllm: false, telegram_bot: false, watcher: false },
+                    loading: { comfyui: false, llamacpp: false, vllm: false, bot: false, watcher: false, status: false },
                     scanData: { versions:[], models:[] },
                     logModal: { show: false, server: '', title: '', content: '', autoScroll: true },
                     logTimer: null, hwTimer: null,
                     gpuTopology: { available: false, gpus: [], services: {} },
                     gpuTuning: { available: false, gpus: [] }, gpuTuningSaving: false,
                     managerService: { enabled: false },
-                    autoStart: { autostart: false, autostart_llama: false, autostart_comfyui: false, autostart_bot: false, autostart_watcher: false },
+                    servicePorts: { comfyui: 8188, llama: 8080, vllm: 8000 },
+                    autoStart: { autostart: false, autostart_llama: false, autostart_comfyui: false, autostart_bot: false, autostart_watcher: false, autostart_vllm: false },
                     autoStartDefs: [
-                        { key: 'autostart_comfyui', label: 'ComfyUI' }, { key: 'autostart_llama', label: 'llama.cpp' },
+                        { key: 'autostart_comfyui', label: 'ComfyUI' }, { key: 'autostart_llama', label: 'llama.cpp' }, { key: 'autostart_vllm', label: 'vLLM' },
                         { key: 'autostart_bot', label: 'Bot' }, { key: 'autostart_watcher', label: 'Watcher' }
                     ],
                     comfySettings: {
@@ -974,7 +992,9 @@
                         optionalArgs: {}, gpuDevices: []
                     },
                     hwHistoryModal: { show: false, history: [] },
-                    hwHistoryTimer: null
+                    hwHistoryTimer: null,
+                    desktop: { available: false, mode: 'unknown', switching: false },
+                    monitorPower: { available: false, state: 'unknown', count: 0, switching: '' }
                 };
             },
             computed: {
@@ -1038,6 +1058,11 @@
                 }
             },
             methods: {
+                serviceUrl(port) {
+                    const rawHost = window.location.hostname;
+                    const host = rawHost.includes(':') && !rawHost.startsWith('[') ? `[${rawHost}]` : rawHost;
+                    return `${window.location.protocol}//${host}:${Number(port)}`;
+                },
                 getDirName(path) {
                     if (!path) return "";
                     const parts = String(path).split(/[\\/]/);
@@ -1104,7 +1129,7 @@
                         data.gpus = (data.gpus || []).map(gpu => ({...gpu, edit: {
                             power_limit: gpu.configured?.power_limit ?? gpu.power_limit,
                             clock_max: gpu.configured?.clock_max ?? gpu.clock_hardware_max,
-                            fan_percent: gpu.configured?.fan_percent ?? gpu.fan_speed ?? 0,
+                            fan_percent: gpu.configured?.fan_auto ? 0 : (gpu.configured?.fan_percent ?? gpu.fan_speed ?? 0),
                         }}));
                         this.gpuTuning = data;
                     } catch (e) { console.warn(e); }
@@ -1113,7 +1138,7 @@
                     if (!confirm(`GPU ${gpu.index}에 ${gpu.edit.power_limit}W / ${gpu.edit.clock_max}MHz / Fan ${gpu.edit.fan_percent}%를 적용하고 부팅 설정으로 저장할까요?`)) return;
                     this.gpuTuningSaving = true;
                     try {
-                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'set', gpu_index:gpu.index, ...gpu.edit})});
+                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'set', gpu_index:gpu.index, gpu_uuid:gpu.uuid, ...gpu.edit})});
                         const data = await res.json(); if(!res.ok) throw new Error(data.detail || '적용 실패');
                         await this.fetchGpuTuning(); await this.fetchGpuTopology();
                     } catch(e) { alert('GPU 설정 적용 실패: ' + e.message); } finally { this.gpuTuningSaving=false; }
@@ -1122,7 +1147,7 @@
                     if (!confirm(`GPU ${gpu.index}의 전력·클럭·팬을 NVIDIA 기본값으로 복원하고 부팅 설정도 바꿀까요?`)) return;
                     this.gpuTuningSaving = true;
                     try {
-                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'reset',gpu_index:gpu.index})});
+                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'reset',gpu_index:gpu.index,gpu_uuid:gpu.uuid})});
                         const data=await res.json(); if(!res.ok) throw new Error(data.detail || '복원 실패');
                         await this.fetchGpuTuning(); await this.fetchGpuTopology();
                     } catch(e) { alert('GPU 기본값 복원 실패: '+e.message); } finally { this.gpuTuningSaving=false; }
@@ -1225,6 +1250,28 @@
                     } catch (e) { }
                 },
 
+                async fetchDesktopMode() {
+                    try {
+                        const res = await fetch('/api/desktop/mode');
+                        const d = await res.json();
+                        this.desktop = { ...this.desktop, ...d, switching: false };
+                    } catch(e) {
+                        this.desktop.available = false;
+                        this.desktop.switching = false;
+                    }
+                },
+
+                async fetchMonitorPower() {
+                    if (this.monitorPower.switching) return;
+                    try {
+                        const res = await fetch('/api/monitor/power');
+                        const d = await res.json();
+                        this.monitorPower = { ...this.monitorPower, ...d, switching: false };
+                    } catch(e) {
+                        this.monitorPower.available = false;
+                    }
+                },
+
                 async fetchStatus() {
                     if (this.isRestarting) return; 
                     this.loading.status = true;
@@ -1235,8 +1282,16 @@
                         this.status = {
                             comfyui: !!(svc.comfyui && svc.comfyui.running),
                             llamacpp: !!(svc.llama && svc.llama.running),
+                            vllm: !!(svc.vllm && svc.vllm.running),
                             telegram_bot: !!(svc.bot && svc.bot.running),
                             watcher: !!(svc.watcher && svc.watcher.running)
+                        };
+                        const runtimeSettings = d.settings || {};
+                        this.servicePorts = {
+                            ...this.servicePorts,
+                            comfyui: Number(runtimeSettings.comfyui_port) || this.servicePorts.comfyui,
+                            llama: Number(d.llama_ports?.public || runtimeSettings.llama_port) || this.servicePorts.llama,
+                            vllm: Number(runtimeSettings.vllm_port) || this.servicePorts.vllm
                         };
                     } catch (e) { }
                     this.loading.status = false;
@@ -1288,6 +1343,51 @@
                         if (!res.ok) throw new Error(await res.text());
                         setTimeout(() => this.fetchStatus(), 1500);
                     } catch(e) { alert("Panic sequence failed: " + e.message); }
+                },
+
+                async toggleDesktopMode() {
+                    const target = this.desktop.mode === 'gui' ? 'cli' : 'gui';
+                    const label = target === 'gui' ? 'GUI (그래픽)' : '컴퓨트 (GDM 중지)';
+                    if (!confirm(`[데스크톱 모드 전환]\n\n현재: ${this.desktop.mode === 'gui' ? 'GUI' : '컴퓨트'} 모드\n전환: ${label} 모드\n\n컴퓨트 모드는 GDM을 중지하고 물리 화면을 tty1 로그인 콘솔로 전환합니다. AI 서버·SSH·SMB와 독립 XRDP 세션은 계속 실행되지만 3390 화면 공유는 GUI 로그인 세션을 다시 열 때까지 사용할 수 없습니다. 휴대폰 브라우저의 이 대시보드에서 GUI를 복구할 수 있습니다.\n\n계속하시겠습니까?`)) {
+                        return;
+                    }
+                    this.desktop.switching = true;
+                    try {
+                        const res = await fetch('/api/desktop/mode', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ mode: target })
+                        });
+                        if (!res.ok) {
+                            const err = await res.text();
+                            throw new Error(err);
+                        }
+                        const data = await res.json();
+                        if (data.mode) this.desktop.mode = data.mode;
+                        setTimeout(() => this.fetchDesktopMode(), 3000);
+                    } catch(e) {
+                        alert("모드 전환 실패: " + e.message);
+                        this.desktop.switching = false;
+                    }
+                },
+
+                async setMonitorPower(target) {
+                    const label = target === 'off' ? '끄기' : '켜기';
+                    if (!confirm(`현재 표시 상태와 관계없이 DDC/CI 물리 모니터 ${label} 명령을 강제로 전송하시겠습니까?\nCLI 모드에서도 켜기 명령을 실행할 수 있습니다.`)) return;
+                    this.monitorPower.switching = target;
+                    try {
+                        const res = await fetch('/api/monitor/power', {
+                            method: 'POST', headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({state: target})
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        this.monitorPower.state = target;
+                    } catch(e) {
+                        alert('물리 모니터 전환 실패: ' + e.message);
+                    } finally {
+                        this.monitorPower.switching = '';
+                        setTimeout(() => this.fetchMonitorPower(), 1000);
+                    }
                 },
 
                 openLogModal(server) {
@@ -1680,11 +1780,15 @@
                 this.fetchScanData();
                 this.fetchStatus();
                 this.fetchHardware();
+                this.fetchDesktopMode();
+                this.fetchMonitorPower();
                 
                 setInterval(() => {
                     this.fetchStatus();
                     this.fetchHardware();
                     this.fetchGpuTopology();
+                    this.fetchDesktopMode();
+                    this.fetchMonitorPower();
                 }, 2000);
             }
         }).mount('#app');

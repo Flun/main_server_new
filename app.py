@@ -28,6 +28,7 @@ from dataset_api import router as dataset_router
 from vast_api import router as vast_router
 from process_mgr import Service, find_process, tail
 from llama_vram_guard import run_guard
+from infrastructure import router as infrastructure_router, vllm_service
 
 HOST = "0.0.0.0"
 PORT = 8999
@@ -46,6 +47,7 @@ services = {
     "llama": Service("llama"),
     "bot": Service("bot"),
     "watcher": Service("watcher"),
+    "vllm": vllm_service,
 }
 
 STARTED_AT = time.time()
@@ -70,6 +72,7 @@ app.include_router(model_hub_router)
 app.include_router(media_router)
 app.include_router(dataset_router)
 app.include_router(vast_router)
+app.include_router(infrastructure_router)
 
 
 # ---------- 유틸 ----------
@@ -529,6 +532,14 @@ def vast_page():
     )
 
 
+@app.get("/infrastructure", response_class=HTMLResponse)
+def infrastructure_page():
+    return FileResponse(
+        os.path.join(BASE_DIR, "infrastructure.html"),
+        headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"},
+    )
+
+
 
 # ---------- 상태 ----------
 
@@ -555,6 +566,12 @@ def _service_state(name):
         comfy_dir = settings.get("comfyui_dir")
         if comfy_dir:
             pids = [p for p in pids if _pid_cmdline_has(p, comfy_dir)]
+        if pids:
+            st["running"] = True
+            st["pid"] = pids[0]
+            st["external"] = True
+    if name == "vllm" and not st["running"]:
+        pids = find_process(r"vllm\s+serve|vllm\.entrypoints\.openai")
         if pids:
             st["running"] = True
             st["pid"] = pids[0]
@@ -599,12 +616,14 @@ def gpus():
         "llama": configured_devices(last_run.get("gpuDevices") or last_run.get("device") or []),
         "bot": configured_devices(services["bot"].device or []),
         "watcher": configured_devices(services["watcher"].device or []),
+        "vllm": configured_devices(services["vllm"].device or []),
     }
     service_defs = {
             "comfyui": {"label": "ComfyUI", "color": "amber"},
             "llama": {"label": "llama.cpp", "color": "sky"},
             "bot": {"label": "봇", "color": "emerald"},
             "watcher": {"label": "와처", "color": "violet"},
+            "vllm": {"label": "vLLM", "color": "rose"},
     }
     topo["services"] = {}
     for name, definition in service_defs.items():
@@ -799,7 +818,6 @@ def llama_cleanup():
 
 
 LLAMA_GIT_REPO = "https://github.com/ggml-org/llama.cpp"
-LLAMA_SRC_ROOT = "/opt/llama-src"
 
 LLAMA_BUILD_STATE = {
     "busy": False,
@@ -853,7 +871,9 @@ def _build_llama_git(tag):
         _llama_install_log(f"===== llama.cpp {tag} git 빌드 시작 =====")
 
         # 소스 클론 (이미 있으면 최신 태그로 갱신)
-        src_dir = os.path.join(LLAMA_SRC_ROOT, tag)
+        # Keep build sources under the configured llama.cpp root so changing
+        # the installation directory really moves the whole managed tree.
+        src_dir = os.path.join(settings.get("llama_install_root"), ".src", tag)
         os.makedirs(src_dir, exist_ok=True)
         if not os.path.exists(os.path.join(src_dir, ".git")):
             _llama_install_log(f"git clone --depth 1 --branch {tag} {LLAMA_GIT_REPO}")
@@ -1145,11 +1165,29 @@ def linux_settings_save(data: dict):
 
 GPU_CONTROL_HELPER = "/usr/local/sbin/main-server-gpu-control"
 GPU_TUNE_CONFIG = "/etc/main-server/gpu-tune.conf"
+GPU_TUNE_CONFIG_DIR = "/etc/main-server/gpu-tune.d"
+
+
+def _read_gpu_tuning_config(path):
+    values = {}
+    try:
+        for line in Path(path).read_text(encoding="utf-8").splitlines():
+            if "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip("'\"")
+            if key.strip() == "GPU_UUID":
+                values[key.strip()] = value
+            else:
+                values[key.strip()] = int(value)
+    except (OSError, ValueError):
+        return {}
+    return values
 
 
 def _gpu_tuning_snapshot():
     fields = (
-        "index,name,power.draw,power.limit,power.default_limit,power.min_limit,"
+        "index,uuid,name,power.draw,power.limit,power.default_limit,power.min_limit,"
         "power.max_limit,clocks.current.graphics,clocks.max.graphics,fan.speed"
     )
     result = subprocess.run(
@@ -1158,14 +1196,12 @@ def _gpu_tuning_snapshot():
     )
     if result.returncode:
         raise HTTPException(503, result.stderr.strip() or "NVIDIA GPU 정보를 읽지 못했습니다")
-    configured = {}
-    try:
-        for line in Path(GPU_TUNE_CONFIG).read_text(encoding="utf-8").splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                configured[key.strip()] = int(value.strip())
-    except (OSError, ValueError):
-        configured = {"GPU_INDEX": 0, "POWER_LIMIT": 280, "CLOCK_MAX": 1800, "FAN_PERCENT": 65}
+    configured_by_uuid = {}
+    for path in Path(GPU_TUNE_CONFIG_DIR).glob("GPU-*.conf"):
+        values = _read_gpu_tuning_config(path)
+        if values.get("GPU_UUID"):
+            configured_by_uuid[values["GPU_UUID"]] = values
+    legacy_config = _read_gpu_tuning_config(GPU_TUNE_CONFIG)
 
     def number(value, integer=False):
         value = value.strip()
@@ -1176,20 +1212,26 @@ def _gpu_tuning_snapshot():
     gpus = []
     for line in result.stdout.strip().splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 10:
+        if len(parts) != 11:
             continue
+        configured = configured_by_uuid.get(parts[1])
+        if not configured and legacy_config.get("GPU_INDEX") == int(parts[0]):
+            configured = legacy_config
         gpu = {
-            "index": int(parts[0]), "name": parts[1], "power_draw": number(parts[2]),
-            "power_limit": number(parts[3]), "power_default": number(parts[4]),
-            "power_min": number(parts[5]), "power_max": number(parts[6]),
-            "clock_current": number(parts[7], True), "clock_hardware_max": number(parts[8], True),
-            "fan_speed": number(parts[9], True), "configured": None,
+            "index": int(parts[0]), "uuid": parts[1], "name": parts[2],
+            "power_draw": number(parts[3]), "power_limit": number(parts[4]),
+            "power_default": number(parts[5]), "power_min": number(parts[6]),
+            "power_max": number(parts[7]), "clock_current": number(parts[8], True),
+            "clock_hardware_max": number(parts[9], True), "fan_speed": number(parts[10], True),
+            "fan_supported": number(parts[10], True) is not None, "configured": None,
         }
-        if configured.get("GPU_INDEX") == gpu["index"]:
+        if configured:
             gpu["configured"] = {
                 "power_limit": configured.get("POWER_LIMIT"),
                 "clock_max": configured.get("CLOCK_MAX"),
                 "fan_percent": configured.get("FAN_PERCENT"),
+                "fan_auto": bool(configured.get("FAN_AUTO", 0)),
+                "clock_auto": bool(configured.get("CLOCK_AUTO", 0)),
             }
         gpus.append(gpu)
     return {
@@ -1213,14 +1255,16 @@ def gpu_tuning_set(data: dict):
         raise HTTPException(503, "GPU 제어 helper가 설치되지 않았습니다")
     action = str(data.get("action") or "set")
     try:
-        gpu_index = int(data.get("gpu_index", 0))
+        gpu_selector = str(data.get("gpu_uuid") or data.get("gpu_index", 0))
+        if not (gpu_selector.isdigit() or re.fullmatch(r"GPU-[A-Za-z0-9-]+", gpu_selector)):
+            raise ValueError("GPU 식별자가 올바르지 않습니다")
         if action == "reset":
-            command = ["sudo", "-n", GPU_CONTROL_HELPER, "reset", str(gpu_index)]
+            command = ["sudo", "-n", GPU_CONTROL_HELPER, "reset", gpu_selector]
         elif action == "set":
             power = int(data["power_limit"])
             clock = int(data["clock_max"])
             fan = int(data["fan_percent"])
-            command = ["sudo", "-n", GPU_CONTROL_HELPER, "set", str(gpu_index), str(power), str(clock), str(fan)]
+            command = ["sudo", "-n", GPU_CONTROL_HELPER, "set", gpu_selector, str(power), str(clock), str(fan)]
         else:
             raise ValueError("지원하지 않는 작업입니다")
     except (KeyError, TypeError, ValueError) as error:
@@ -1269,6 +1313,7 @@ def _folder_for(target):
         "bot": settings.get("bot_dir"),
         "watcher": settings.get("watcher_dir"),
         "logs": os.path.join(BASE_DIR, "logs"),
+        "vllm": settings.get("vllm_env"),
         "base": BASE_DIR,
     }
     if target not in folders:
@@ -1326,6 +1371,91 @@ def _restart_now():
     # systemd의 Restart=always가 새 manager를 하나만 기동합니다. 여기서 직접
     # app.py를 spawn하면 systemd 재기동과 경합해 8999를 점유하는 orphan이 생깁니다.
     os._exit(0)
+
+
+# ---------- 데스크톱 GUI/CLI 모드 전환 ----------
+
+DESKTOP_TOGGLE_HELPER = "/usr/local/sbin/main-server-desktop-toggle"
+MONITOR_POWER_HELPER = "/usr/local/sbin/main-server-monitor-power"
+
+
+def _desktop_toggle(args, timeout=60):
+    if IS_WINDOWS:
+        raise HTTPException(400, "데스크톱 모드 전환은 Linux에서만 지원합니다")
+    if not os.path.exists(DESKTOP_TOGGLE_HELPER):
+        raise HTTPException(500, f"헬퍼가 없습니다: {DESKTOP_TOGGLE_HELPER}")
+    try:
+        proc = subprocess.run(
+            ["sudo", "-n", DESKTOP_TOGGLE_HELPER] + args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        raise HTTPException(504, "모드 전환 시간이 초과되었습니다")
+    except Exception as exc:
+        raise HTTPException(500, f"모드 전환 실행 실패: {exc}")
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip() or "모드 전환 실패"
+        raise HTTPException(500, detail)
+    return proc.stdout.strip()
+
+
+@app.get("/api/desktop/mode")
+def desktop_mode():
+    if IS_WINDOWS:
+        return {"available": False, "mode": "unknown", "error": "Linux only"}
+    try:
+        mode = _desktop_toggle(["get"], timeout=10)
+    except HTTPException as exc:
+        return {"available": False, "mode": "unknown", "error": str(exc.detail)}
+    if mode.startswith("unknown:"):
+        return {"available": False, "mode": "unknown", "target": mode.split(":", 1)[1]}
+    return {"available": True, "mode": mode}
+
+
+@app.post("/api/desktop/mode")
+def desktop_mode_set(payload: dict = None):
+    mode = (payload or {}).get("mode")
+    if mode not in ("gui", "cli"):
+        raise HTTPException(400, "mode는 'gui' 또는 'cli'여야 합니다")
+    new_mode = _desktop_toggle(["set", mode])
+    return {"ok": True, "mode": new_mode}
+
+
+def _monitor_power(action="status", timeout=30):
+    if IS_WINDOWS:
+        raise HTTPException(400, "물리 모니터 제어는 Linux에서만 지원합니다")
+    if not os.path.exists(MONITOR_POWER_HELPER):
+        raise HTTPException(503, "모니터 전원 helper가 설치되지 않았습니다")
+    try:
+        result = subprocess.run(
+            ["sudo", "-n", MONITOR_POWER_HELPER, action],
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(504, "모니터 전원 제어 시간이 초과되었습니다") from error
+    if result.returncode:
+        raise HTTPException(500, result.stderr.strip() or result.stdout.strip() or "모니터 전원 제어 실패")
+    parts = result.stdout.strip().split()
+    if action == "status":
+        if len(parts) != 3:
+            raise HTTPException(500, "모니터 상태 응답을 해석하지 못했습니다")
+        return {"available": parts[0] == "available", "state": parts[1], "count": int(parts[2])}
+    return {"ok": True, "state": action, "message": result.stdout.strip()}
+
+
+@app.get("/api/monitor/power")
+def monitor_power_get():
+    return _monitor_power()
+
+
+@app.post("/api/monitor/power")
+def monitor_power_set(payload: dict = None):
+    state = str((payload or {}).get("state") or "")
+    if state not in ("on", "off"):
+        raise HTTPException(400, "state는 'on' 또는 'off'여야 합니다")
+    return _monitor_power(state, timeout=45)
 
 
 # ---------- 시작 ----------
@@ -1396,6 +1526,7 @@ def _auto_start_services():
         ("autostart_comfyui", "comfyui"),
         ("autostart_bot", "bot"),
         ("autostart_watcher", "watcher"),
+        ("autostart_vllm", "vllm"),
     ]
     any_set = any(settings.get(k) for k, _ in keys)
     for key, name in keys:
@@ -1416,6 +1547,12 @@ def _auto_start_services():
                 bot_start()
             elif name == "watcher":
                 watcher_start()
+            elif name == "vllm":
+                from infrastructure import build_vllm_command, load_settings
+                configured = load_settings()
+                cmd, runtime_env = build_vllm_command(configured)
+                devices = [item.strip() for item in str(configured.get("gpu_devices") or "").split(",") if item.strip()]
+                services["vllm"].start(cmd, env=runtime_env, device=devices or None)
         except Exception:
             pass
     if not any_set:

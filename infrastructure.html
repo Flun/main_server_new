@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>통합 AI 실행 환경</title>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = { darkMode: 'class', theme: { extend: { colors: { zinc: { 950: '#09090b' } } } } };
+    </script>
+    <style>
+        [v-cloak] { display:none } body { background:#09090b; color:#e4e4e7 }
+        .field { width:100%; border:1px solid #3f3f46; background:#09090b; border-radius:.5rem; padding:.55rem .7rem; font:12px ui-monospace,monospace; outline:none }
+        .field:focus { border-color:#f43f5e }
+        button:disabled { opacity:.4; cursor:not-allowed }
+    </style>
+</head>
+<body class="min-h-screen p-4 sm:p-8">
+<main id="app" v-cloak class="mx-auto max-w-6xl space-y-6">
+    <header class="flex flex-wrap items-start justify-between gap-4 border-b border-zinc-800 pb-5">
+        <div><h1 class="text-2xl font-semibold">통합 AI 실행 환경</h1><p class="mt-1 text-sm text-zinc-500">ComfyUI · llama.cpp · vLLM 경로, 설치, 업데이트, 실행을 한곳에서 관리합니다.</p></div>
+        <a href="/" class="rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 text-sm hover:bg-zinc-800">메인으로</a>
+    </header>
+
+    <section class="rounded-xl border p-5" :class="state.native_nvfp4_ready ? 'border-emerald-500/30 bg-emerald-500/5' : 'border-amber-500/30 bg-amber-500/5'">
+        <div class="flex flex-wrap items-start justify-between gap-3">
+            <div><h2 class="font-semibold">CMP 170HX / NVFP4 준비 상태</h2><p class="mt-1 text-xs" :class="state.native_nvfp4_ready ? 'text-emerald-300' : 'text-amber-300'">{{ state.native_nvfp4_ready ? 'native NVFP4 실행 준비됨' : '현재 GPU에서는 실행을 잠금 — CMP 170HX 장착 후 자동 해제' }}</p></div>
+            <div class="flex gap-2 text-xs"><span class="rounded border border-zinc-700 px-2 py-1">stable vLLM {{ state.stable?.version || '미설치' }}</span><span class="rounded border border-zinc-700 px-2 py-1">모델 {{ state.model?.available ? '확인' : '없음' }}</span></div>
+        </div>
+        <div class="mt-3 grid gap-2 sm:grid-cols-2">
+            <div v-for="gpu in state.gpus" :key="gpu.index" class="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3 text-xs"><b>GPU {{gpu.index}} · {{gpu.name}}</b><div class="mt-1 text-zinc-500">{{(gpu.memory_mb/1024).toFixed(0)}} GB · compute {{gpu.compute_capability}} · driver {{gpu.driver}}</div><div class="mt-1" :class="gpu.native_nvfp4 ? 'text-emerald-400' : 'text-amber-400'">{{gpu.native_nvfp4 ? 'native NVFP4 가능' : 'native NVFP4 불가'}}</div></div>
+        </div>
+        <p v-for="warning in state.warnings" :key="warning" class="mt-2 text-xs text-amber-300">• {{warning}}</p>
+    </section>
+
+    <section class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5">
+        <div class="flex items-center justify-between"><div><h2 class="font-semibold">통합 경로 설정</h2><p class="mt-1 text-xs text-zinc-500">서버 설치 위치와 공유 모델 저장소는 독립적으로 지정됩니다. 저장하면 기존 llama.cpp/ComfyUI 설정에도 반영됩니다.</p></div><button @click="save" :disabled="saving" class="rounded-lg bg-rose-600 px-4 py-2 text-sm hover:bg-rose-500">{{saving ? '저장 중' : '경로 저장'}}</button></div>
+        <div class="mt-4 grid gap-4 md:grid-cols-2">
+            <label class="text-xs text-zinc-400">서버 통합 루트<input v-model="form.server_root" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">공유 모델 루트<input v-model="form.model_root" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">ComfyUI 설치 폴더<input v-model="form.comfyui_dir" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">llama.cpp 버전 루트<input v-model="form.llama_install_root" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">vLLM 안정 환경<input v-model="form.vllm_env" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">vLLM DFlash2 실험 환경<input v-model="form.vllm_dflash_env" class="field mt-1"></label>
+        </div>
+    </section>
+
+    <section class="grid gap-4 md:grid-cols-3">
+        <article class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5"><h3 class="font-semibold">ComfyUI</h3><p class="mt-2 min-h-10 text-xs text-zinc-500">없으면 설치하고, 기존 git 설치면 fast-forward 업데이트합니다.</p><button @click="install('comfyui')" :disabled="busy" class="mt-4 w-full rounded-lg border border-indigo-500/30 bg-indigo-500/10 py-2 text-sm text-indigo-300">설치 / 업데이트</button></article>
+        <article class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5"><h3 class="font-semibold">llama.cpp</h3><p class="mt-2 min-h-10 text-xs text-zinc-500">기존 CUDA 빌드 방식으로 최신 릴리스를 별도 버전 폴더에 설치합니다.</p><button @click="updateLlama" :disabled="busy" class="mt-4 w-full rounded-lg border border-sky-500/30 bg-sky-500/10 py-2 text-sm text-sky-300">최신 버전 빌드</button></article>
+        <article class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5"><h3 class="font-semibold">vLLM</h3><p class="mt-2 min-h-10 text-xs text-zinc-500">현재 0.22.0 환경을 재사용합니다. 모델 호환 버전 복구와 최신 업데이트를 선택할 수 있습니다.</p><div class="mt-4 grid grid-cols-2 gap-2"><button @click="install('vllm-compatible')" :disabled="busy" class="rounded-lg border border-emerald-500/30 bg-emerald-500/10 py-2 text-xs text-emerald-300">0.22.0 복구</button><button @click="installLatest" :disabled="busy" class="rounded-lg border border-amber-500/30 bg-amber-500/10 py-2 text-xs text-amber-300">최신 업데이트</button></div></article>
+    </section>
+
+    <section class="rounded-xl border border-zinc-800 bg-zinc-900/70 p-5">
+        <div class="flex flex-wrap items-start justify-between gap-3"><div><h2 class="font-semibold">vLLM 실행 프로필</h2><p class="mt-1 text-xs text-zinc-500">OpenAI 호환 API · 기본 포트 8000 · 공유 HF 캐시 사용</p></div><span class="rounded-full px-3 py-1 text-xs" :class="state.service?.running ? 'bg-emerald-500/15 text-emerald-300' : 'bg-zinc-800 text-zinc-500'">{{state.service?.running ? `실행 중 · PID ${state.service.pid}` : '중지됨'}}</span></div>
+        <div class="mt-4 grid gap-3 md:grid-cols-2">
+            <button @click="form.profile='mtp'" class="rounded-lg border p-4 text-left" :class="form.profile==='mtp' ? 'border-emerald-500 bg-emerald-500/10' : 'border-zinc-700'"><b class="text-sm">안정: NVFP4 + MTP n=3</b><p class="mt-1 text-xs text-zinc-500">모델 카드 공식 구성. CMP 170HX 단일 기준 베이스라인 측정용.</p></button>
+            <button @click="form.profile='dflash'" class="rounded-lg border p-4 text-left" :class="form.profile==='dflash' ? 'border-rose-500 bg-rose-500/10' : 'border-zinc-700'"><b class="text-sm">실험: NVFP4 + DFlash2 n=7</b><p class="mt-1 text-xs text-zinc-500">약 200 tok/s 목표. 미병합 vLLM PR #52816 기반이며 성능은 보장값이 아닙니다.</p></button>
+        </div>
+        <div v-if="form.profile==='dflash'" class="mt-3 rounded-lg border border-rose-500/25 bg-rose-500/5 p-3 text-xs text-rose-200"><div>DFlash2 모델: <span class="font-mono">{{form.dflash_model}}</span></div><button @click="install('vllm-dflash')" :disabled="busy" class="mt-2 rounded border border-rose-500/30 px-3 py-1.5">격리된 실험 환경 설치 / 업데이트</button></div>
+        <div class="mt-4 grid gap-4 md:grid-cols-2 lg:grid-cols-4">
+            <label class="text-xs text-zinc-400 md:col-span-2">대상 모델 경로 / HF ID<input v-model="form.vllm_model" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">GPU 번호<input v-model="form.gpu_devices" class="field mt-1" placeholder="0"></label>
+            <label class="text-xs text-zinc-400">포트<input v-model.number="form.port" type="number" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">최대 컨텍스트<input v-model.number="form.max_model_len" type="number" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">GPU 메모리 비율<input v-model.number="form.gpu_memory_utilization" type="number" min="0.1" max="1" step="0.01" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">최대 동시 시퀀스<input v-model.number="form.max_num_seqs" type="number" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400">API 모델 이름<input v-model="form.served_model_name" class="field mt-1"></label>
+            <label class="text-xs text-zinc-400 lg:col-span-4">추가 vLLM 인자<input v-model="form.extra_args" class="field mt-1" placeholder="예: --disable-custom-all-reduce"></label>
+        </div>
+        <label class="mt-3 flex items-center gap-2 text-xs text-zinc-400"><input type="checkbox" v-model="form.autostart_vllm"> 관리자 시작 시 vLLM 자동 실행</label>
+        <div class="mt-5 flex flex-wrap gap-2"><button v-if="!state.service?.running" @click="startVllm" :disabled="saving || !state.native_nvfp4_ready" class="rounded-lg bg-emerald-600 px-5 py-2 text-sm">vLLM 시작</button><button v-else @click="stopVllm" class="rounded-lg bg-zinc-700 px-5 py-2 text-sm">vLLM 중지</button><button @click="benchmark" :disabled="!state.service?.running || benchmarking" class="rounded-lg border border-fuchsia-500/30 bg-fuchsia-500/10 px-5 py-2 text-sm text-fuchsia-300">{{benchmarking ? '측정 중' : '코딩 512토큰 벤치마크'}}</button><button @click="save" :disabled="saving" class="rounded-lg border border-zinc-700 px-5 py-2 text-sm">설정만 저장</button></div>
+        <div v-if="benchmarkResult" class="mt-4 rounded-lg border border-fuchsia-500/25 bg-fuchsia-500/5 p-4"><div class="text-2xl font-semibold text-fuchsia-300">{{benchmarkResult.output_tokens_per_second}} tok/s</div><div class="mt-1 text-xs text-zinc-500">출력 {{benchmarkResult.output_tokens}} tokens · {{benchmarkResult.elapsed_seconds}}초 · {{benchmarkResult.profile}} 프로필</div></div>
+    </section>
+
+    <section v-if="busy || installLog.length" class="rounded-xl border border-zinc-800 bg-black p-4"><div class="mb-2 flex justify-between text-xs"><b>설치 / 업데이트 로그</b><span :class="busy ? 'text-amber-300' : 'text-zinc-500'">{{state.install?.message}}</span></div><pre class="max-h-72 overflow-auto whitespace-pre-wrap text-[11px] text-zinc-400">{{installLog.join('\n')}}</pre></section>
+</main>
+<script>
+const { createApp } = Vue;
+createApp({
+    data: () => ({ state:{gpus:[],warnings:[],stable:{},service:{},install:{}}, form:{}, saving:false, installLog:[], installTimer:null, benchmarking:false, benchmarkResult:null }),
+    computed: { busy() { return !!this.state.install?.busy; } },
+    methods: {
+        async request(url, options={}) { const res=await fetch(url, options); const data=await res.json().catch(()=>({})); if(!res.ok) throw new Error(data.detail || JSON.stringify(data)); return data; },
+        async refresh() { try { const d=await this.request('/api/infrastructure'); this.state=d; if(!Object.keys(this.form).length) this.form={...d.settings}; if(d.install?.busy) this.pollInstall(); } catch(e) { alert('상태 조회 실패: '+e.message); } },
+        async save(silent=false) { this.saving=true; try { const d=await this.request('/api/infrastructure/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(this.form)}); this.state=d.status; this.form={...d.settings}; if(!silent) alert('통합 설정을 저장했습니다.'); return true; } catch(e) { if(!silent) alert('저장 실패: '+e.message); return false; } finally { this.saving=false; } },
+        async install(target) { if(!await this.save(true)) return; if(!confirm(`${target} 설치/업데이트를 시작할까요? 실행 중인 해당 서비스는 먼저 중지하세요.`)) return; try { const d=await this.request('/api/infrastructure/install/'+target,{method:'POST'}); this.state.install=d.install; this.pollInstall(); } catch(e) { alert('설치 시작 실패: '+e.message); } },
+        installLatest() { if(confirm('최신 vLLM은 이 모델에서 검증된 0.22.0과 다를 수 있습니다. 안정 환경을 직접 업데이트할까요?')) this.install('vllm-latest'); },
+        async updateLlama() { if(!await this.save(true)) return; try { const release=await this.request('/api/llama/releases'); if(!confirm(`llama.cpp ${release.tag_name} CUDA 빌드를 시작할까요?`)) return; await this.request('/api/llama/install?tag='+encodeURIComponent(release.tag_name),{method:'POST'}); alert('llama.cpp 빌드를 시작했습니다. 메인 화면에서 진행 상태를 확인하세요.'); } catch(e) { alert('llama.cpp 업데이트 실패: '+e.message); } },
+        pollInstall() { if(this.installTimer) return; const tick=async()=>{ try { const d=await this.request('/api/infrastructure/install/status'); this.state.install=d.install; this.installLog=d.log||[]; if(!d.install.busy){clearInterval(this.installTimer);this.installTimer=null;await this.refresh();} }catch(e){} }; tick(); this.installTimer=setInterval(tick,1500); },
+        async startVllm() { if(!await this.save(true)) return; try { await this.request('/api/infrastructure/vllm/start',{method:'POST'}); setTimeout(()=>this.refresh(),1200); } catch(e) { alert('vLLM 시작 실패: '+e.message); } },
+        async stopVllm() { if(!confirm('vLLM 서버를 중지할까요?')) return; try { await this.request('/api/infrastructure/vllm/stop',{method:'POST'}); await this.refresh(); } catch(e) { alert('중지 실패: '+e.message); } },
+        async benchmark() { this.benchmarking=true; this.benchmarkResult=null; try { this.benchmarkResult=await this.request('/api/infrastructure/vllm/benchmark',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({max_tokens:512})}); } catch(e) { alert('벤치마크 실패: '+e.message); } finally { this.benchmarking=false; } }
+    },
+    mounted() { this.refresh(); setInterval(()=>this.refresh(),5000); }
+}).mount('#app');
+</script>
+</body>
+</html>

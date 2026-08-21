@@ -8,6 +8,7 @@ queue and deadlocking.
 import asyncio
 import json
 import logging
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -56,6 +57,43 @@ HOP_BY_HOP_HEADERS = {
     "transfer-encoding",
     "upgrade",
 }
+LLAMA_IDLE_VRAM_LIMIT_MB = 1024
+
+
+def scan_llama_vram_usage():
+    """Return compute-memory usage for local llama-server processes.
+
+    PyTorch's allocator only reports memory owned by ComfyUI, so a handoff
+    must use the driver view to detect memory that is still owned by
+    llama.cpp.  A sleeping llama-server keeps a small CUDA context alive.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=pid,process_name,used_gpu_memory",
+                "--format=csv,noheader,nounits",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError) as error:
+        raise RuntimeError(f"nvidia-smi 실행 실패: {error}") from error
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "nvidia-smi failed").strip()
+        raise RuntimeError(detail)
+
+    usages = []
+    for line in result.stdout.splitlines():
+        parts = [part.strip() for part in line.rsplit(",", 2)]
+        if len(parts) != 3 or "llama-server" not in parts[1].lower():
+            continue
+        try:
+            usages.append({"pid": int(parts[0]), "process_name": parts[1], "used_memory_mb": int(parts[2])})
+        except ValueError:
+            continue
+    return usages
 
 
 def create_guard_app(
@@ -134,6 +172,39 @@ def create_guard_app(
             "llama_backend": app.state.backend_url,
             "cleanup_enabled": cleanup_enabled(),
         }
+
+    @app.get("/__vram_guard/wait-backend-release")
+    async def wait_backend_release(timeout: float = 60, max_used_mb: int = LLAMA_IDLE_VRAM_LIMIT_MB):
+        """Block ComfyUI's next GPU step until llama.cpp has really unloaded."""
+        timeout = min(120.0, max(1.0, float(timeout)))
+        max_used_mb = min(4096, max(64, int(max_used_mb)))
+        deadline = asyncio.get_running_loop().time() + timeout
+        last_usages = []
+        while True:
+            try:
+                last_usages = await asyncio.to_thread(scan_llama_vram_usage)
+            except RuntimeError as error:
+                return JSONResponse(
+                    {"released": False, "error": str(error)},
+                    status_code=503,
+                )
+            if not last_usages or all(item["used_memory_mb"] <= max_used_mb for item in last_usages):
+                return {
+                    "released": True,
+                    "max_used_mb": max_used_mb,
+                    "llama_processes": last_usages,
+                }
+            if asyncio.get_running_loop().time() >= deadline:
+                return JSONResponse(
+                    {
+                        "released": False,
+                        "error": "llama.cpp가 제한 시간 안에 VRAM을 반환하지 않았습니다",
+                        "max_used_mb": max_used_mb,
+                        "llama_processes": last_usages,
+                    },
+                    status_code=503,
+                )
+            await asyncio.sleep(0.25)
 
     @app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"])
     async def proxy(path: str, request: Request):

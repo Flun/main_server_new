@@ -14,6 +14,7 @@ GPU_SERVICE_LABELS = {
     "llama": {"label": "llama.cpp", "color": "sky"},
     "bot": {"label": "봇", "color": "emerald"},
     "watcher": {"label": "와처", "color": "violet"},
+    "vllm": {"label": "vLLM", "color": "rose"},
     "system": {"label": "OS / 디스플레이 / 드라이버", "color": "zinc"},
 }
 
@@ -239,6 +240,8 @@ def _classify_process(pid, process_name=""):
                 return "bot"
             if "watcher" in command:
                 return "watcher"
+            if "vllm" in command and ("serve" in command or "openai" in command):
+                return "vllm"
             parent = proc.parent()
             if parent is None:
                 break

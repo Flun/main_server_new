@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Stop only the display manager; AI services, SSH, SMB and user services remain.
+# Compute mode explicitly activates tty1 so the local monitor shows a usable
+# login prompt instead of a black framebuffer left behind by GDM.
+set -euo pipefail
+DISPLAY_MANAGER=display-manager.service
+CONSOLE_GETTY=getty@tty1.service
+die() { echo "$*" >&2; exit 2; }
+get_mode() { if systemctl is-active --quiet "$DISPLAY_MANAGER"; then echo gui; else echo cli; fi; }
+
+activate_gui_vt() {
+  local session tty attempt
+  for attempt in {1..30}; do
+    while read -r session _; do
+      [[ -n "$session" ]] || continue
+      tty=$(loginctl show-session "$session" -p TTY --value 2>/dev/null || true)
+      if [[ "$tty" =~ ^tty([0-9]+)$ ]] && [[ $(loginctl show-session "$session" -p Seat --value 2>/dev/null || true) == seat0 ]]; then
+        chvt "${BASH_REMATCH[1]}"
+        return 0
+      fi
+    done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+    sleep 0.5
+  done
+  return 1
+}
+
+case "${1:-}" in
+  get) get_mode ;;
+  set)
+    case "${2:-}" in
+      gui)
+        systemctl stop "$CONSOLE_GETTY" 2>/dev/null || true
+        systemctl start "$DISPLAY_MANAGER"
+        activate_gui_vt || true
+        echo gui
+        ;;
+      cli)
+        systemctl stop "$DISPLAY_MANAGER"
+        systemctl start "$CONSOLE_GETTY"
+        chvt 1
+        echo cli
+        ;;
+      *) die "usage: $0 set gui|cli" ;;
+    esac ;;
+  toggle) if [[ $(get_mode) == gui ]]; then exec "$0" set cli; else exec "$0" set gui; fi ;;
+  *) die "usage: $0 get|set gui|cli|toggle" ;;
+esac

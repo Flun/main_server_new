@@ -1,17 +1,56 @@
 --- a/custom_nodes/ComfyUI_JH_Nodes/__init__.py
 +++ b/custom_nodes/ComfyUI_JH_Nodes/__init__.py
-@@ -2309,1 +2309,1 @@
+@@ -2151,6 +2151,6 @@ class JHLlamaPrompt:
+                 "vision_max_size": ("INT", {"default": 1024, "min": 256, "max": 4096, "step": 64}),
+                 "video_frames": ("INT", {"default": 4, "min": 1, "max": 16}),
 -                "server_url": ("STRING", {"default": "http://127.0.0.1:8080"}),
 +                "server_url": ("STRING", {"default": "http://127.0.0.1:8082"}),
-@@ -2601,4 +2601,11 @@
-     def create_prompt(self, prompt, mode, instruction, enable_vision, vision_max_size, video_frames, server_url, model, max_tokens, temperature, seed, timeout, display_text="", display_lora_info="", character_sheet_mode="Normal", curvy_mode=False, glamorous_mode=False, huge_breasts_mode=False, character_identity="LoRA / model", identity_trigger="", curvy_strength=1.0, glamorous_strength=1.0, huge_breasts_strength=1.0, reuse_identical_image=False, supplemental_prompt="", supplemental_position="After base prompt", translation_provider="Papago", translate_prompt=False, translate_instruction=False, translate_supplemental=False, image=None, video=None, lora_info=None, unique_id=None, extra_pnginfo=None):
+                 "model": ("STRING", {"default": "auto"}),
+                 "max_tokens": ("INT", {"default": 768, "min": 1, "max": 8192}),
+                 "temperature": ("FLOAT", {"default": 0.7, "min": 0.0, "max": 2.0, "step": 0.05}),
+@@ -2221,6 +2221,22 @@ class JHLlamaPrompt:
+             raise RuntimeError("llama.cpp returned no loaded models")
+         return models[0].get("id") or models[0].get("model") or models[0].get("name")
+-
++
++    def _wait_for_vram_handoff(self, server_url, timeout):
++        """Wait until the managed llama backend has finished its idle unload."""
++        parsed = urllib.parse.urlparse(server_url)
++        if parsed.hostname not in {"127.0.0.1", "localhost", "::1"} or parsed.port != 8082:
++            return
++        guard_host = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
++        guard_url = parsed._replace(
++            netloc=f"{guard_host}:8080",
++            path="/__vram_guard/wait-backend-release",
++            query=urllib.parse.urlencode({"timeout": min(120, max(10, timeout))}),
++            fragment="",
++        ).geturl()
++        response = self._request_json(guard_url, timeout=min(125, max(15, timeout + 5)))
++        if response.get("released") is not True:
++            raise RuntimeError(f"llama.cpp VRAM handoff failed: {response}")
++
+     def _pil_image_content(self, pil_image, max_size):
+         pil_image.thumbnail((max_size, max_size), Image.Resampling.LANCZOS)
+         buffer = io.BytesIO()
+@@ -2446,5 +2462,11 @@ class JHLlamaPrompt:
          server_url = server_url.rstrip("/")
          parsed_url = urllib.parse.urlparse(server_url)
-+        # 8080 is the human-facing VRAM guard. A ComfyUI node calling it would
-+        # wait for its own running queue forever, so migrate old workflows to
-+        # the direct llama backend automatically.
++        # Port 8080 waits for ComfyUI to become idle and would deadlock a node
++        # inside the active queue, so use the managed direct backend here.
 +        if parsed_url.hostname in {"127.0.0.1", "localhost", "::1"} and parsed_url.port == 8080:
 +            direct_host = f"[{parsed_url.hostname}]" if ":" in parsed_url.hostname else parsed_url.hostname
 +            server_url = parsed_url._replace(netloc=f"{direct_host}:8082").geturl()
 +            parsed_url = urllib.parse.urlparse(server_url)
          if parsed_url.scheme != "http" or parsed_url.hostname not in {"127.0.0.1", "localhost", "::1"}:
+             raise ValueError("server_url must point to a local llama.cpp HTTP server")
+         if enable_vision and image is None and video is None:
+@@ -2550,6 +2572,8 @@ class JHLlamaPrompt:
+                         print(f"[JH llama.cpp Prompt] Could not write prompt cache: {error}")
+             results[sheet_mode] = text
+-
++        if models_unloaded:
++            self._wait_for_vram_handoff(server_url, timeout)
++
+         if cache_hit:
+             self._send_cache_hit(unique_id)
+         normal_prompt = results.get(False, "")

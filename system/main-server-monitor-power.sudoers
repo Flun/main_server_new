@@ -1,0 +1,2 @@
+# main_server may only control DDC/CI monitor power through this validated helper.
+flux ALL=(root) NOPASSWD: /usr/local/sbin/main-server-monitor-power *

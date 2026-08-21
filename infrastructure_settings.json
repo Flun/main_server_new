@@ -1,0 +1,21 @@
+{
+  "server_root": "/home/flux",
+  "model_root": "/media/flux/새 볼륨/model",
+  "comfyui_dir": "/home/flux/ComfyUI",
+  "llama_install_root": "/opt/llama",
+  "vllm_env": "/home/flux/vllm-env",
+  "vllm_dflash_env": "/home/flux/vllm-dflash-env",
+  "vllm_model": "/media/flux/새 볼륨/model/vllm/Qwen3.8-27B-MTP-NVFP4",
+  "dflash_model": "incoai/Qwen3.8-27B-DFlash2",
+  "profile": "mtp",
+  "host": "0.0.0.0",
+  "port": 8000,
+  "gpu_devices": "0",
+  "gpu_memory_utilization": 0.9,
+  "max_model_len": 131072,
+  "max_num_seqs": 4,
+  "served_model_name": "qwen3.8-27b",
+  "api_key": "",
+  "extra_args": "",
+  "autostart_vllm": false
+}
