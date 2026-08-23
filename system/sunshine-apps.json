@@ -5,7 +5,13 @@
   "apps": [
     {
       "name": "Desktop",
-      "image-path": "desktop.png"
+      "image-path": "desktop.png",
+      "prep-cmd": [
+        {
+          "do": "/usr/local/bin/main-server-sunshine-monitor-layout session-start",
+          "undo": "/usr/local/bin/main-server-sunshine-monitor-layout restore"
+        }
+      ]
     }
   ]
 }

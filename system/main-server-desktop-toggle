@@ -5,20 +5,73 @@
 set -euo pipefail
 DISPLAY_MANAGER=display-manager.service
 CONSOLE_GETTY=getty@tty1.service
+TARGET_USER=flux
+TARGET_UID=1000
+USER_RUNTIME=/run/user/$TARGET_UID
 die() { echo "$*" >&2; exit 2; }
 get_mode() { if systemctl is-active --quiet "$DISPLAY_MANAGER"; then echo gui; else echo cli; fi; }
+
+userctl() {
+  runuser -u "$TARGET_USER" -- env \
+    XDG_RUNTIME_DIR="$USER_RUNTIME" \
+    DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_RUNTIME/bus" \
+    systemctl --user "$@"
+}
+
+find_active_desktop_session() {
+  local session
+  while read -r session _; do
+    [[ -n "$session" ]] || continue
+    [[ $(loginctl show-session "$session" -p Name --value 2>/dev/null || true) == "$TARGET_USER" ]] || continue
+    [[ $(loginctl show-session "$session" -p Class --value 2>/dev/null || true) == user ]] || continue
+    [[ $(loginctl show-session "$session" -p State --value 2>/dev/null || true) == active ]] || continue
+    [[ $(loginctl show-session "$session" -p Seat --value 2>/dev/null || true) == seat0 ]] || continue
+    printf '%s' "$session"
+    return 0
+  done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+  return 1
+}
+
+wait_for_desktop_session() {
+  local attempt session
+  for attempt in {1..60}; do
+    if session=$(find_active_desktop_session); then
+      printf '%s' "$session"
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+wait_for_gnome_ready() {
+  local attempt
+  for attempt in {1..120}; do
+    if pgrep -u "$TARGET_UID" -x gnome-shell >/dev/null 2>&1 &&
+       userctl is-active --quiet gnome-session-initialized.target &&
+       userctl is-active --quiet org.gnome.Shell@x11.service &&
+       runuser -u "$TARGET_USER" -- env XAUTHORITY="$USER_RUNTIME/gdm/Xauthority" \
+         bash -c 'for socket in /tmp/.X11-unix/X*; do [[ -S "$socket" ]] || continue; DISPLAY=":${socket##*X}" xrandr --query >/dev/null 2>&1 && exit 0; done; exit 1'; then
+      # The shell can report active before its extensions, input handling and
+      # desktop surfaces have completed their first frame.
+      sleep 4
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
 
 activate_gui_vt() {
   local session tty attempt
   for attempt in {1..30}; do
-    while read -r session _; do
-      [[ -n "$session" ]] || continue
+    if session=$(find_active_desktop_session); then
       tty=$(loginctl show-session "$session" -p TTY --value 2>/dev/null || true)
-      if [[ "$tty" =~ ^tty([0-9]+)$ ]] && [[ $(loginctl show-session "$session" -p Seat --value 2>/dev/null || true) == seat0 ]]; then
+      if [[ "$tty" =~ ^tty([0-9]+)$ ]]; then
         chvt "${BASH_REMATCH[1]}"
         return 0
       fi
-    done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+    fi
     sleep 0.5
   done
   return 1
@@ -29,12 +82,27 @@ case "${1:-}" in
   set)
     case "${2:-}" in
       gui)
+        # A GUI transition is also the final recovery path after a failed
+        # text-console wake. Try DDC/fbcon first; Xorg will provide a second
+        # signal once GDM starts.
+        /usr/local/sbin/main-server-monitor-power on >/dev/null 2>&1 || true
         systemctl stop "$CONSOLE_GETTY" 2>/dev/null || true
         systemctl start "$DISPLAY_MANAGER"
+        wait_for_desktop_session >/dev/null || die "GDM은 시작됐지만 flux 자동 로그인 세션이 30초 안에 생성되지 않았습니다"
+        wait_for_gnome_ready || die "flux 로그인은 됐지만 GNOME Shell이 60초 안에 준비되지 않았습니다"
         activate_gui_vt || true
+        # GDM greeter가 아니라 새 flux 세션의 DISPLAY/PipeWire에 다시 붙인다.
+        userctl restart gnome-remote-desktop.service
+        userctl restart sunshine.service
+        userctl is-active --quiet gnome-remote-desktop.service || die "3390 원격 데스크톱 재시작 실패"
+        userctl is-active --quiet sunshine.service || die "Sunshine 재시작 실패"
         echo gui
         ;;
       cli)
+        # These services cannot capture a desktop after GDM stops. Stop them
+        # explicitly to release their X11/NvFBC resources; GUI mode starts them
+        # again only after the new flux session is ready.
+        userctl stop sunshine.service gnome-remote-desktop.service 2>/dev/null || true
         systemctl stop "$DISPLAY_MANAGER"
         systemctl start "$CONSOLE_GETTY"
         chvt 1

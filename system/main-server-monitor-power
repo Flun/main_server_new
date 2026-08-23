@@ -20,19 +20,52 @@ find_display() {
   return 1
 }
 
+activate_graphical_vt() {
+  local session tty
+  while read -r session _; do
+    [[ -n "$session" ]] || continue
+    [[ $(loginctl show-session "$session" -p Class --value 2>/dev/null || true) == user ]] || continue
+    [[ $(loginctl show-session "$session" -p State --value 2>/dev/null || true) == active ]] || continue
+    [[ $(loginctl show-session "$session" -p Seat --value 2>/dev/null || true) == seat0 ]] || continue
+    tty=$(loginctl show-session "$session" -p TTY --value 2>/dev/null || true)
+    if [[ "$tty" =~ ^tty([0-9]+)$ ]]; then
+      chvt "${BASH_REMATCH[1]}" >/dev/null 2>&1 || true
+      return 0
+    fi
+  done < <(loginctl list-sessions --no-legend 2>/dev/null || true)
+  return 1
+}
+
 detect_buses() {
   "$DDCUTIL" detect --brief 2>/dev/null |
     awk '/I2C bus:/ { sub("/dev/i2c-", "", $3); if ($3 ~ /^[0-9]+$/) print $3 }'
 }
 
 status() {
-  local state=on count=0
+  local state=on count=0 cached_buses value bus on_count=0 off_count=0
   if [[ -r "$STATE_FILE" ]]; then
-    read -r state count _ <"$STATE_FILE" || true
+    read -r state count cached_buses <"$STATE_FILE" || true
+  fi
+  read -r -a buses <<<"${cached_buses:-}"
+  if ((${#buses[@]} == 0)); then
+    mapfile -t buses < <(detect_buses)
+  fi
+  for bus in "${buses[@]}"; do
+    [[ "$bus" =~ ^[0-9]+$ ]] || continue
+    value=$("$DDCUTIL" getvcp D6 --bus "$bus" --terse 2>/dev/null | awk '{print $4; exit}' || true)
+    [[ "$value" == x01 ]] && ((on_count += 1))
+    [[ "$value" == x04 ]] && ((off_count += 1))
+  done
+  if (( on_count > 0 && off_count == 0 )); then
+    state=on
+    count=$on_count
+  elif (( off_count > 0 && on_count == 0 )); then
+    state=off
+    count=$off_count
   fi
   if [[ ! "$count" =~ ^[0-9]+$ ]] || (( count == 0 )); then
-    count=$(detect_buses | wc -l)
-    printf 'on %s\n' "$count" >"$STATE_FILE"
+    count=${#buses[@]}
+    printf 'on %s %s\n' "$count" "${buses[*]}" >"$STATE_FILE"
     chmod 0644 "$STATE_FILE"
     state=on
   fi
@@ -63,8 +96,9 @@ power_off() {
 }
 
 power_on() {
-  local display= output line mode geometry x y rate primary_arg entry
+  local display= output line mode geometry x y rate primary_arg entry mode_ready attempt
   local successes=0 restored=0 cached_state cached_count cached_buses
+  local -a detected_buses=()
 
   # Wake through DDC first. Unlike xrandr, this path also works after GDM/X11
   # has been stopped for compute mode.
@@ -73,7 +107,12 @@ power_on() {
     read -r cached_state cached_count cached_buses <"$STATE_FILE" || true
     read -r -a buses <<<"${cached_buses:-}"
   fi
-  for attempt in 1 2 3; do
+  if ! systemctl is-active --quiet display-manager.service; then
+    systemctl start getty@tty1.service >/dev/null 2>&1 || true
+    chvt 1 >/dev/null 2>&1 || true
+    setterm --blank poke --powersave off --powerdown 0 </dev/tty1 >/dev/tty1 2>/dev/null || true
+  fi
+  for attempt in {1..6}; do
     for bus in "${buses[@]}"; do
       [[ "$bus" =~ ^[0-9]+$ ]] || continue
       if "$DDCUTIL" setvcp D6 01 --bus "$bus" --noverify >/dev/null 2>&1; then
@@ -81,11 +120,21 @@ power_on() {
       fi
     done
     (( successes > 0 )) && break
-    # In text mode, selecting VT1 retriggers the active DRM console signal.
-    systemctl start getty@tty1.service >/dev/null 2>&1 || true
-    chvt 1 >/dev/null 2>&1 || true
+    if systemctl is-active --quiet display-manager.service; then
+      # Never move a live GUI to tty1 merely because a sleeping panel did not
+      # answer DDC. Re-select the existing graphical VT instead.
+      activate_graphical_vt || true
+    else
+      # Only a real compute/CLI mode may use VT1 as the DRM wake signal.
+      systemctl start getty@tty1.service >/dev/null 2>&1 || true
+      chvt 1 >/dev/null 2>&1 || true
+      setterm --blank poke --powersave off --powerdown 0 </dev/tty1 >/dev/tty1 2>/dev/null || true
+    fi
     sleep 1
-    mapfile -t buses < <(detect_buses)
+    mapfile -t detected_buses < <(detect_buses)
+    if ((${#detected_buses[@]} > 0)); then
+      buses=("${detected_buses[@]}")
+    fi
   done
 
   # If a live X11 session exists, cycle its outputs too. This is an optional
@@ -115,11 +164,27 @@ power_on() {
   for entry in "${restore_commands[@]}"; do
     IFS='|' read -r output mode rate geometry primary_arg <<<"$entry"
     DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" xrandr --output "$output" --off
-    sleep 0.5
-    command=(xrandr --output "$output" --mode "$mode" --pos "$geometry")
-    [[ -n "$rate" ]] && command+=(--rate "$rate")
+    sleep 1
+    # A waking DisplayPort panel can temporarily report no named modes. Bring
+    # the connector up with --auto first, then restore the exact mode/rate only
+    # after it reappears instead of aborting with "cannot find mode".
+    command=(xrandr --output "$output" --auto --pos "$geometry")
     [[ -n "$primary_arg" ]] && command+=("$primary_arg")
     DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" "${command[@]}"
+    mode_ready=0
+    for attempt in {1..10}; do
+      if DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" xrandr --query |
+          awk -v name="$output" -v wanted="$mode" '$1 == name { found=1; next } found && $1 == wanted { yes=1; exit } found && $1 !~ /^[[:space:]]/ { exit } END { exit !yes }'; then
+        command=(xrandr --output "$output" --mode "$mode" --pos "$geometry")
+        [[ -n "$rate" ]] && command+=(--rate "$rate")
+        [[ -n "$primary_arg" ]] && command+=("$primary_arg")
+        if DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" "${command[@]}"; then
+          mode_ready=1
+          break
+        fi
+      fi
+      sleep 0.5
+    done
     ((restored += 1))
     sleep 0.5
   done
@@ -133,7 +198,9 @@ power_on() {
       [[ -n "$rate" ]] && command+=(--rate "$rate")
       [[ -n "$primary_arg" ]] && command+=("$primary_arg")
     done
-    DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" "${command[@]}"
+    # Exact replay is best-effort because EDID modes may still be settling;
+    # each output is already active at its saved position via --auto above.
+    DISPLAY="$display" XAUTHORITY="$XAUTHORITY_FILE" "${command[@]}" >/dev/null 2>&1 || true
   fi
 
   # A signal cycle may make additional DDC buses visible, so issue wake once
@@ -145,6 +212,11 @@ power_on() {
     fi
   done
   (( successes > 0 || restored > 0 )) || die "모니터 깨우기 명령을 적용하지 못했습니다"
+  if systemctl is-active --quiet display-manager.service; then
+    activate_graphical_vt || true
+  else
+    setterm --blank poke --powersave off --powerdown 0 </dev/tty1 >/dev/tty1 2>/dev/null || true
+  fi
   local count=${#buses[@]}
   (( count > 0 )) || count=${#restore_commands[@]}
   (( count > 0 )) || count=1

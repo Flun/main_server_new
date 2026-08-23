@@ -1,0 +1,86 @@
+[
+  {
+    "id": "GPU-6cd658de-2bfc-dbd7-78d3-beec843855d9:1787469191078",
+    "gpu_uuid": "GPU-6cd658de-2bfc-dbd7-78d3-beec843855d9",
+    "gpu_index": 0,
+    "gpu_name": "NVIDIA CMP 170HX",
+    "threshold_c": 85,
+    "started_at": 1787469191.0781817,
+    "last_seen_at": 1787469287.7752154,
+    "ended_at": 1787469287.7752154,
+    "peak_c": 89,
+    "workloads": [
+      {
+        "pid": 2742,
+        "service": "other",
+        "label": "Other",
+        "name": "/usr/libexec/gnome-remote-desktop-daemon",
+        "vram_used_gb": 0.28
+      },
+      {
+        "pid": 17433,
+        "service": "other",
+        "label": "Other",
+        "name": "/home/flux/memtest_vulkan/target/release/memtest_vulkan",
+        "vram_used_gb": 62.69
+      }
+    ],
+    "duration_seconds": 96.7
+  },
+  {
+    "id": "GPU-6cd658de-2bfc-dbd7-78d3-beec843855d9:1787469313239",
+    "gpu_uuid": "GPU-6cd658de-2bfc-dbd7-78d3-beec843855d9",
+    "gpu_index": 0,
+    "gpu_name": "NVIDIA CMP 170HX",
+    "threshold_c": 85,
+    "started_at": 1787469313.2399578,
+    "last_seen_at": 1787469318.3393893,
+    "ended_at": 1787469318.3393893,
+    "peak_c": 86,
+    "workloads": [
+      {
+        "pid": 2742,
+        "service": "other",
+        "label": "Other",
+        "name": "/usr/libexec/gnome-remote-desktop-daemon",
+        "vram_used_gb": 0.28
+      },
+      {
+        "pid": 17433,
+        "service": "other",
+        "label": "Other",
+        "name": "/home/flux/memtest_vulkan/target/release/memtest_vulkan",
+        "vram_used_gb": 62.69
+      }
+    ],
+    "duration_seconds": 5.1
+  },
+  {
+    "id": "GPU-6cd658de-2bfc-dbd7-78d3-beec843855d9:1787469323424",
+    "gpu_uuid": "GPU-6cd658de-2bfc-dbd7-78d3-beec843855d9",
+    "gpu_index": 0,
+    "gpu_name": "NVIDIA CMP 170HX",
+    "threshold_c": 85,
+    "started_at": 1787469323.4249084,
+    "last_seen_at": 1787469532.3589835,
+    "ended_at": 1787469532.3589835,
+    "peak_c": 90,
+    "workloads": [
+      {
+        "pid": 2742,
+        "service": "other",
+        "label": "Other",
+        "name": "/usr/libexec/gnome-remote-desktop-daemon",
+        "vram_used_gb": 0.28
+      },
+      {
+        "pid": 17433,
+        "service": "other",
+        "label": "Other",
+        "name": "/home/flux/memtest_vulkan/target/release/memtest_vulkan",
+        "vram_used_gb": 62.69
+      }
+    ],
+    "duration_seconds": 208.9
+  }
+]

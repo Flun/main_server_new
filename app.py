@@ -37,8 +37,10 @@ PRESETS_FILE = os.path.join(BASE_DIR, "presets.json")
 MEMO_FILE = os.path.join(BASE_DIR, "memo.txt")
 COMYFUI_SETTINGS_FILE = os.path.join(BASE_DIR, "comfyui_settings.json")
 HW_HISTORY_FILE = os.path.join(BASE_DIR, "hw_history.json")
+GPU_THERMAL_EVENTS_FILE = os.path.join(BASE_DIR, "gpu_thermal_events.json")
 LAST_RUN_FILE = os.path.join(BASE_DIR, "last_run.json")
 LLAMA_SETTINGS_FILE = os.path.join(BASE_DIR, "llama_settings.json")
+SUNSHINE_MONITOR_SETTINGS_FILE = os.path.join(BASE_DIR, "sunshine_monitor_settings.json")
 LLAMA_PUBLIC_PORT = int(settings.get("llama_port") or 8080)
 LLAMA_BACKEND_PORT = 8082
 
@@ -63,6 +65,7 @@ STATE = {
         "time": 0.0,
     },
     "history": [],
+    "thermal_events": [],
     "llama_versions": [],
     "gguf_models": [],
 }
@@ -88,6 +91,106 @@ def _read_json(path, default):
 def _write_json(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
+
+
+GPU_HBM_WARNING_C = 85
+GPU_THERMAL_EVENT_LIMIT = 500
+_thermal_event_lock = threading.Lock()
+_active_thermal_events = {}
+
+
+def _load_gpu_thermal_events():
+    events = _read_json(GPU_THERMAL_EVENTS_FILE, [])
+    if not isinstance(events, list):
+        events = []
+    changed = False
+    for event in events:
+        if isinstance(event, dict) and event.get("ended_at") is None:
+            event["ended_at"] = event.get("last_seen_at") or event.get("started_at")
+            event["ended_reason"] = "manager_restart"
+            changed = True
+    STATE["thermal_events"] = [event for event in events if isinstance(event, dict)][-GPU_THERMAL_EVENT_LIMIT:]
+    if changed:
+        _write_json(GPU_THERMAL_EVENTS_FILE, STATE["thermal_events"])
+
+
+def _thermal_workloads(gpu_uuid, processes):
+    workloads = []
+    seen = set()
+    for process in processes:
+        if process.get("gpu_uuid") != gpu_uuid:
+            continue
+        key = (process.get("pid"), process.get("service"), process.get("name"))
+        if key in seen:
+            continue
+        seen.add(key)
+        workloads.append({
+            "pid": process.get("pid"),
+            "service": process.get("service") or "other",
+            "label": process.get("service_label") or "Other",
+            "name": process.get("name") or "unknown",
+            "vram_used_gb": process.get("vram_used_gb"),
+        })
+    if not workloads:
+        workloads.append({
+            "pid": None, "service": "unknown", "label": "미식별 / 시스템",
+            "name": "no-compute-process", "vram_used_gb": None,
+        })
+    return workloads
+
+
+def _update_gpu_thermal_events(gpus, processes, sampled_at):
+    dirty = False
+    with _thermal_event_lock:
+        for gpu in gpus:
+            temperature = gpu.get("temp_memory")
+            if temperature is None:
+                continue
+            uuid = gpu.get("uuid")
+            active = _active_thermal_events.get(uuid)
+            if temperature > GPU_HBM_WARNING_C:
+                workloads = _thermal_workloads(uuid, processes)
+                if active is None:
+                    active = {
+                        "id": f"{uuid}:{int(sampled_at * 1000)}",
+                        "gpu_uuid": uuid, "gpu_index": gpu.get("index"),
+                        "gpu_name": gpu.get("name"), "threshold_c": GPU_HBM_WARNING_C,
+                        "started_at": sampled_at, "last_seen_at": sampled_at,
+                        "ended_at": None, "peak_c": temperature,
+                        "workloads": workloads,
+                    }
+                    STATE["thermal_events"].append(active)
+                    _active_thermal_events[uuid] = active
+                    dirty = True
+                else:
+                    active["last_seen_at"] = sampled_at
+                    if temperature > active.get("peak_c", temperature):
+                        active["peak_c"] = temperature
+                        dirty = True
+                    known = {
+                        (item.get("pid"), item.get("service"), item.get("name"))
+                        for item in active.get("workloads", [])
+                    }
+                    for workload in workloads:
+                        key = (workload.get("pid"), workload.get("service"), workload.get("name"))
+                        if key not in known:
+                            active.setdefault("workloads", []).append(workload)
+                            known.add(key)
+                            dirty = True
+            elif active is not None:
+                active["last_seen_at"] = sampled_at
+                active["ended_at"] = sampled_at
+                active["duration_seconds"] = round(sampled_at - active["started_at"], 1)
+                _active_thermal_events.pop(uuid, None)
+                dirty = True
+        if len(STATE["thermal_events"]) > GPU_THERMAL_EVENT_LIMIT:
+            STATE["thermal_events"] = STATE["thermal_events"][-GPU_THERMAL_EVENT_LIMIT:]
+            dirty = True
+        if dirty:
+            _write_json(GPU_THERMAL_EVENTS_FILE, STATE["thermal_events"])
+
+
+_load_gpu_thermal_events()
 
 
 def load_presets():
@@ -448,6 +551,8 @@ def _run_dir_python(dir_path, script="main.py"):
 
 def _sample_hw():
     gpus = get_gpus()
+    processes = scan_vram_processes()
+    sampled_at = time.time()
     cpu = psutil.cpu_percent(interval=None)
     vm = psutil.virtual_memory()
     STATE["hw"] = {
@@ -456,12 +561,13 @@ def _sample_hw():
         "ram_total": vm.total,
         "ram_used": vm.used,
         "ram_percent": vm.percent,
-        "vram_procs": scan_vram_processes(),
-        "time": time.time(),
+        "vram_procs": processes,
+        "time": sampled_at,
     }
+    _update_gpu_thermal_events(gpus, processes, sampled_at)
     STATE["history"].append(
         {
-            "t": time.time(),
+            "t": sampled_at,
             "gpu_util": [g["util"] for g in gpus],
             "gpu_mem": [g["mem_util"] for g in gpus],
             "cpu": cpu,
@@ -655,6 +761,30 @@ def hardware():
 @app.get("/api/hardware/history")
 def hardware_history():
     return {"history": STATE["history"]}
+
+
+@app.get("/api/gpu/thermal-events")
+def gpu_thermal_events():
+    with _thermal_event_lock:
+        events = list(reversed(STATE["thermal_events"]))
+    counts = {}
+    for event in events:
+        uuid = event.get("gpu_uuid")
+        counts[uuid] = counts.get(uuid, 0) + 1
+    return {
+        "threshold_c": GPU_HBM_WARNING_C,
+        "counts": counts,
+        "events": events,
+    }
+
+
+@app.post("/api/gpu/thermal-events/clear")
+def gpu_thermal_events_clear():
+    with _thermal_event_lock:
+        STATE["thermal_events"] = []
+        _active_thermal_events.clear()
+        _write_json(GPU_THERMAL_EVENTS_FILE, [])
+    return {"ok": True}
 
 
 # ---------- llama.cpp ----------
@@ -1164,7 +1294,6 @@ def linux_settings_save(data: dict):
 
 
 GPU_CONTROL_HELPER = "/usr/local/sbin/main-server-gpu-control"
-GPU_TUNE_CONFIG = "/etc/main-server/gpu-tune.conf"
 GPU_TUNE_CONFIG_DIR = "/etc/main-server/gpu-tune.d"
 
 
@@ -1187,8 +1316,9 @@ def _read_gpu_tuning_config(path):
 
 def _gpu_tuning_snapshot():
     fields = (
-        "index,uuid,name,power.draw,power.limit,power.default_limit,power.min_limit,"
-        "power.max_limit,clocks.current.graphics,clocks.max.graphics,fan.speed"
+        "index,uuid,name,pci.device_id,power.draw,power.limit,power.default_limit,power.min_limit,"
+        "power.max_limit,clocks.current.graphics,clocks.max.graphics,clocks.current.memory,"
+        "clocks.max.memory,fan.speed"
     )
     result = subprocess.run(
         ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
@@ -1201,8 +1331,6 @@ def _gpu_tuning_snapshot():
         values = _read_gpu_tuning_config(path)
         if values.get("GPU_UUID"):
             configured_by_uuid[values["GPU_UUID"]] = values
-    legacy_config = _read_gpu_tuning_config(GPU_TUNE_CONFIG)
-
     def number(value, integer=False):
         value = value.strip()
         if value in {"", "N/A", "[N/A]"}:
@@ -1212,21 +1340,33 @@ def _gpu_tuning_snapshot():
     gpus = []
     for line in result.stdout.strip().splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 11:
+        if len(parts) != 14:
             continue
         configured = configured_by_uuid.get(parts[1])
-        if not configured and legacy_config.get("GPU_INDEX") == int(parts[0]):
-            configured = legacy_config
+        # Never reuse the old index-based config: inserting or reordering a card
+        # could otherwise apply another GPU's power limit to this UUID.
+        pci_device_id = parts[3].lower()
+        is_cmp_170hx = pci_device_id.startswith(("0x20c2", "0x2082"))
+        recommended_power = 250 if is_cmp_170hx else number(parts[6], True)
+        recommended_clock = 1410 if is_cmp_170hx else number(parts[10], True)
         gpu = {
             "index": int(parts[0]), "uuid": parts[1], "name": parts[2],
-            "power_draw": number(parts[3]), "power_limit": number(parts[4]),
-            "power_default": number(parts[5]), "power_min": number(parts[6]),
-            "power_max": number(parts[7]), "clock_current": number(parts[8], True),
-            "clock_hardware_max": number(parts[9], True), "fan_speed": number(parts[10], True),
-            "fan_supported": number(parts[10], True) is not None, "configured": None,
+            "pci_device_id": pci_device_id, "profile": "cmp_170hx" if is_cmp_170hx else "generic",
+            "power_draw": number(parts[4]), "power_limit": number(parts[5]),
+            "power_default": number(parts[6]), "power_min": number(parts[7]),
+            "power_max": number(parts[8]), "clock_current": number(parts[9], True),
+            "clock_hardware_max": number(parts[10], True),
+            "memory_clock_current": number(parts[11], True),
+            "memory_clock_max": number(parts[12], True), "fan_speed": number(parts[13], True),
+            "fan_supported": number(parts[13], True) is not None, "configured": None,
+            "recommended": {
+                "power_limit": recommended_power, "clock_max": recommended_clock,
+                "fan_percent": 0,
+            },
         }
         if configured:
             gpu["configured"] = {
+                "enabled": bool(configured.get("TUNING_ENABLED", 1)),
                 "power_limit": configured.get("POWER_LIMIT"),
                 "clock_max": configured.get("CLOCK_MAX"),
                 "fan_percent": configured.get("FAN_PERCENT"),
@@ -1260,6 +1400,8 @@ def gpu_tuning_set(data: dict):
             raise ValueError("GPU 식별자가 올바르지 않습니다")
         if action == "reset":
             command = ["sudo", "-n", GPU_CONTROL_HELPER, "reset", gpu_selector]
+        elif action == "disable":
+            command = ["sudo", "-n", GPU_CONTROL_HELPER, "disable", gpu_selector]
         elif action == "set":
             power = int(data["power_limit"])
             clock = int(data["clock_max"])
@@ -1456,6 +1598,21 @@ def monitor_power_set(payload: dict = None):
     if state not in ("on", "off"):
         raise HTTPException(400, "state는 'on' 또는 'off'여야 합니다")
     return _monitor_power(state, timeout=45)
+
+
+@app.get("/api/sunshine/monitor-off-on-connect")
+def sunshine_monitor_off_on_connect_get():
+    data = _read_json(SUNSHINE_MONITOR_SETTINGS_FILE, {"enabled": True})
+    return {"enabled": bool(data.get("enabled", True))}
+
+
+@app.post("/api/sunshine/monitor-off-on-connect")
+def sunshine_monitor_off_on_connect_set(payload: dict = None):
+    enabled = (payload or {}).get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, "enabled는 true 또는 false여야 합니다")
+    _write_json(SUNSHINE_MONITOR_SETTINGS_FILE, {"enabled": enabled})
+    return {"ok": True, "enabled": enabled}
 
 
 # ---------- 시작 ----------

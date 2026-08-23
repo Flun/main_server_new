@@ -72,6 +72,10 @@
                     <span class="w-2 h-2 rounded-full bg-emerald-500/80"></span>
                     <span>System Online</span>
                     <span v-if="hw.lhm_available" class="ml-2 pl-2 border-l border-zinc-700 text-indigo-400">LHM Synced</span>
+                    <span class="ml-2 pl-2 border-l border-zinc-700 inline-flex items-center gap-1.5" :class="monitorPower.state === 'on' ? 'text-emerald-400' : monitorPower.state === 'off' ? 'text-zinc-400' : 'text-amber-400'">
+                        <span class="w-2 h-2 rounded-full" :class="monitorPower.state === 'on' ? 'bg-emerald-400' : monitorPower.state === 'off' ? 'bg-zinc-600' : 'bg-amber-400'"></span>
+                        물리 모니터: {{ monitorPower.state === 'on' ? '켜짐' : monitorPower.state === 'off' ? '꺼짐' : '확인 중' }}<span v-if="monitorPower.count"> ({{ monitorPower.count }}대)</span>
+                    </span>
                 </div>
             </div>
             <div class="flex flex-wrap gap-3 w-full sm:w-auto">
@@ -95,6 +99,10 @@
                 <button @click="setMonitorPower('on')" :disabled="monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
                     <span v-if="monitorPower.switching === 'on'">켜는 중...</span>
                     <span v-else>물리 모니터 강제 켜기</span>
+                </button>
+                <button @click="toggleSunshineMonitorOff" :disabled="sunshineMonitorOff.saving" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40" :class="sunshineMonitorOff.enabled ? 'bg-violet-500/15 border border-violet-500/30 text-violet-300 hover:bg-violet-500/25' : 'bg-zinc-800 border border-zinc-700 text-zinc-400 hover:bg-zinc-700'" title="Moonlight Desktop 스트림이 시작되면 물리 모니터를 자동으로 끔">
+                    <span v-if="sunshineMonitorOff.saving">저장 중...</span>
+                    <span v-else>Moonlight 자동 화면끄기 {{ sunshineMonitorOff.enabled ? 'ON' : 'OFF' }}</span>
                 </button>
                 <button @click="restartManager" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 hover:border-zinc-600 rounded-lg text-zinc-300 shadow-sm">
                     Restart Manager
@@ -198,19 +206,31 @@
                 </div>
             </div>
             <div v-if="!gpuTopology.available" class="mt-4 rounded-lg border border-dashed border-zinc-700 px-4 py-5 text-center text-xs text-zinc-500">NVIDIA GPU 정보를 기다리는 중입니다.</div>
-            <div v-else class="mt-4 grid grid-cols-1 gap-3 lg:grid-cols-2">
-                <div v-for="gpu in gpuTopology.gpus" :key="gpu.uuid" class="rounded-lg border border-zinc-800 bg-zinc-950/50 p-4">
-                    <div class="flex items-start justify-between gap-3">
-                        <div class="min-w-0">
-                            <div class="flex items-center gap-2"><span class="rounded bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">GPU {{ gpu.index }}</span><span class="truncate text-sm font-semibold">{{ gpu.name }}</span></div>
-                            <div class="mt-1 truncate font-mono text-[10px] text-zinc-600">{{ gpu.pci_bus_id }} · {{ gpu.uuid }}</div>
-                        </div>
-                        <div class="shrink-0 text-right"><div class="text-sm font-semibold">{{ (gpu.vram_used / 1024).toFixed(1) }} / {{ (gpu.vram_total / 1024).toFixed(1) }} GB</div><div class="text-[10px] text-zinc-500">Core {{ gpu.util }}%</div></div>
+            <div v-else class="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
+                <div v-for="gpu in gpuTopology.gpus" :key="gpu.uuid" class="rounded-lg border bg-zinc-950/50 p-3" :class="gpu.temp_memory > gpuThermalEvents.threshold_c ? 'border-rose-500/70' : 'border-zinc-800'">
+                    <div class="flex min-w-0 items-center justify-between gap-3">
+                        <div class="flex min-w-0 items-center gap-2"><span class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">GPU {{ gpu.index }}</span><span class="truncate text-xs font-semibold">{{ gpu.name }}</span></div>
+                        <div class="flex shrink-0 items-center gap-2 text-[10px]"><span v-if="thermalEventCount(gpu.uuid)" class="text-amber-400">HBM 경고 {{ thermalEventCount(gpu.uuid) }}회</span><button @click="toggleGpuDetails(gpu.uuid)" class="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-500 hover:text-zinc-300">{{ expandedGpus[gpu.uuid] ? '접기' : '상세' }}</button></div>
                     </div>
-                    <div class="mt-3 h-2 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full" :class="gpu.mem_util > 90 ? 'bg-rose-500' : gpu.mem_util > 70 ? 'bg-amber-500' : 'bg-sky-500'" :style="{width: gpu.mem_util + '%'}"></div></div>
-                    <div class="mt-3 space-y-1.5">
-                        <div v-for="process in gpu.processes" :key="process.service + '-' + (process.pid ?? 'system')" class="flex items-center justify-between gap-3 text-[11px]" :class="process.service === 'system' ? 'rounded bg-zinc-800/60 px-2 py-1 text-zinc-300' : ''"><span class="truncate">{{ process.service_label }}<template v-if="process.pid"> · {{ getDirName(process.name) }} #{{ process.pid }}</template></span><span class="shrink-0 font-mono text-zinc-300">{{ process.vram_used_gb === null ? 'N/A' : process.vram_used_gb + ' GB' }}</span></div>
-                        <div v-if="!gpu.processes.length" class="text-[11px] text-zinc-600">GPU 프로세스 없음</div>
+                    <div class="mt-2 grid grid-cols-3 gap-px overflow-hidden rounded bg-zinc-800 sm:grid-cols-6">
+                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">GPU</div><div class="font-mono text-[11px] text-zinc-300">{{ gpu.util ?? '--' }}%</div></div>
+                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">VRAM</div><div class="whitespace-nowrap font-mono text-[11px] text-zinc-300">{{ (gpu.vram_used / 1024).toFixed(1) }}/{{ (gpu.vram_total / 1024).toFixed(0) }}G</div></div>
+                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">CORE °C</div><div class="font-mono text-[11px]" :class="getColor(gpu.temp)">{{ gpu.temp ?? '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">HBM °C</div><div class="font-mono text-[11px]" :class="gpu.temp_memory > 85 ? 'text-rose-400' : gpu.temp_memory !== null && gpu.temp_memory !== undefined ? 'text-emerald-400' : 'text-zinc-600'">{{ gpu.temp_memory ?? '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">POWER</div><div class="whitespace-nowrap font-mono text-[11px] text-zinc-300">{{ gpu.power != null ? gpu.power.toFixed(0) : '--' }}/{{ gpu.power_max != null ? gpu.power_max.toFixed(0) : '--' }}W</div></div>
+                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">CORE / MEM</div><div class="whitespace-nowrap font-mono text-[11px] text-zinc-300">{{ gpu.clock_graphics ?? '--' }}/{{ gpu.clock_memory ?? '--' }}</div></div>
+                    </div>
+                    <div class="mt-1.5 flex items-center gap-2 text-[9px] text-zinc-600"><div class="h-1 flex-1 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full" :class="gpu.mem_util > 90 ? 'bg-rose-500' : gpu.mem_util > 70 ? 'bg-amber-500' : 'bg-sky-500'" :style="{width: gpu.mem_util + '%'}"></div></div><span>MEM CTRL {{ gpu.memory_controller_util ?? '--' }}%</span></div>
+                    <div v-if="expandedGpus[gpu.uuid]" class="mt-2 border-t border-zinc-800 pt-2">
+                        <div class="truncate font-mono text-[9px] text-zinc-600">{{ gpu.pci_bus_id }} · {{ gpu.uuid }}</div>
+                        <div class="mt-2 space-y-1">
+                            <div v-for="process in gpu.processes" :key="process.service + '-' + (process.pid ?? 'system')" class="flex items-center justify-between gap-3 text-[10px]"><span class="truncate">{{ process.service_label }}<template v-if="process.pid"> · {{ getDirName(process.name) }} #{{ process.pid }}</template></span><span class="shrink-0 font-mono text-zinc-400">{{ process.vram_used_gb === null ? 'N/A' : process.vram_used_gb + ' GB' }}</span></div>
+                            <div v-if="!gpu.processes.length" class="text-[10px] text-zinc-600">GPU 프로세스 없음</div>
+                        </div>
+                        <div v-if="gpuThermalEventsFor(gpu.uuid).length" class="mt-2 rounded border border-amber-500/20 bg-amber-500/5 p-2">
+                            <div class="flex items-center justify-between text-[10px] text-amber-300"><span>HBM &gt; {{ gpuThermalEvents.threshold_c }}°C 이력</span><button @click="clearGpuThermalEvents" class="text-zinc-600 hover:text-zinc-300">전체 삭제</button></div>
+                            <div v-for="event in gpuThermalEventsFor(gpu.uuid).slice(0,5)" :key="event.id" class="mt-1 text-[9px] text-zinc-500"><span class="font-mono text-zinc-400">{{ formatThermalEventTime(event.started_at) }}</span> · 최고 {{ event.peak_c }}°C · {{ event.ended_at ? (event.duration_seconds ?? 0) + '초' : '진행 중' }} · {{ thermalEventWorkloads(event) }}</div>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -223,15 +243,15 @@
             </div>
             <div v-if="gpuTuning.available" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 <span class="font-mono">gpu-tune.service</span>에 저장되어 다음 부팅에도 유지됩니다.</p><p class="mt-1 text-[11px] text-amber-500/80">현재 방식은 전압점 고정이 아니라 Power Limit + 최대 클럭 제한입니다. RTX 3090 Linux 드라이버에서는 850mV 같은 목표 전압을 직접 지정하지 않습니다.</p></div>
+                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 코어 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. 카드별로 적용을 끌 수 있습니다.</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
                     <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">systemd 적용</span>
                 </div>
                 <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
-                    <div><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.name }}</div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · {{ gpu.clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
+                    <div><div class="flex flex-wrap items-center gap-2"><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.profile === 'cmp_170hx' ? 'CMP 170HX' : gpu.name }}</div><span class="rounded border px-1.5 py-0.5 text-[9px]" :class="gpu.configured?.enabled === false ? 'border-zinc-700 text-zinc-500' : gpu.configured?.enabled ? 'border-indigo-500/30 text-indigo-300' : 'border-zinc-800 text-zinc-600'">{{ gpu.configured?.enabled === false ? '적용 꺼짐' : gpu.configured?.enabled ? '부팅 적용' : '미설정' }}</span></div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · Core {{ gpu.clock_current ?? '--' }}MHz · Memory {{ gpu.memory_clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
                     <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" class="input-base mt-1 w-full text-right"></label>
-                    <label class="text-[10px] text-zinc-500">Clock cap (MHz)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" class="input-base mt-1 w-full text-right"></label>
+                    <label class="text-[10px] text-zinc-500">Core clock cap (MHz)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" class="input-base mt-1 w-full text-right"></label>
                     <label class="text-[10px] text-zinc-500">Fan (0=자동, 30–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
-                    <div class="flex gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">기본값</button></div>
+                    <div class="flex flex-wrap gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">권장 기본값</button><button @click="disableGpuTuning(gpu)" :disabled="gpuTuningSaving || gpu.configured?.enabled === false" class="rounded border border-zinc-800 px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 disabled:opacity-40">적용 끄기</button></div>
                 </div>
             </div>
         </section>
@@ -925,6 +945,8 @@
                     logTimer: null, hwTimer: null,
                     gpuTopology: { available: false, gpus: [], services: {} },
                     gpuTuning: { available: false, gpus: [] }, gpuTuningSaving: false,
+                    gpuThermalEvents: { threshold_c: 85, counts: {}, events: [] },
+                    expandedGpus: {},
                     managerService: { enabled: false },
                     servicePorts: { comfyui: 8188, llama: 8080, vllm: 8000 },
                     autoStart: { autostart: false, autostart_llama: false, autostart_comfyui: false, autostart_bot: false, autostart_watcher: false, autostart_vllm: false },
@@ -994,7 +1016,8 @@
                     hwHistoryModal: { show: false, history: [] },
                     hwHistoryTimer: null,
                     desktop: { available: false, mode: 'unknown', switching: false },
-                    monitorPower: { available: false, state: 'unknown', count: 0, switching: '' }
+                    monitorPower: { available: false, state: 'unknown', count: 0, switching: '' },
+                    sunshineMonitorOff: { enabled: true, saving: false }
                 };
             },
             computed: {
@@ -1115,6 +1138,40 @@
                 async fetchGpuTopology() {
                     try { const res = await fetch('/api/gpus'); this.gpuTopology = await res.json(); } catch (e) {}
                 },
+                async fetchGpuThermalEvents() {
+                    try {
+                        const res = await fetch('/api/gpu/thermal-events');
+                        if (res.ok) this.gpuThermalEvents = await res.json();
+                    } catch (e) {}
+                },
+                toggleGpuDetails(uuid) {
+                    this.expandedGpus = { ...this.expandedGpus, [uuid]: !this.expandedGpus[uuid] };
+                },
+                thermalEventCount(uuid) {
+                    return this.gpuThermalEvents.counts?.[uuid] || 0;
+                },
+                gpuThermalEventsFor(uuid) {
+                    return (this.gpuThermalEvents.events || []).filter(event => event.gpu_uuid === uuid);
+                },
+                formatThermalEventTime(timestamp) {
+                    if (!timestamp) return '--';
+                    return new Date(timestamp * 1000).toLocaleString('ko-KR', {hour12:false});
+                },
+                thermalEventWorkloads(event) {
+                    return (event.workloads || []).map(item => {
+                        const processName = item.name && item.name !== 'no-compute-process' ? this.getDirName(item.name) : '';
+                        const detail = item.service === 'other' && processName ? `:${processName}` : '';
+                        return `${item.label}${detail}${item.pid ? ' #'+item.pid : ''}`;
+                    }).join(', ') || '미식별';
+                },
+                async clearGpuThermalEvents() {
+                    if (!confirm('모든 GPU HBM 온도 경고 이력을 삭제할까요?')) return;
+                    try {
+                        const res = await fetch('/api/gpu/thermal-events/clear', {method:'POST'});
+                        if (!res.ok) throw new Error(await res.text());
+                        await this.fetchGpuThermalEvents();
+                    } catch (e) { alert('HBM 온도 이력 삭제 실패: '+e.message); }
+                },
                 async fetchAutoStart() {
                     try {
                         const res = await fetch('/api/linux-settings'); const data = await res.json();
@@ -1127,9 +1184,9 @@
                         const res = await fetch('/api/gpu/tuning'); const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || 'GPU 설정 조회 실패');
                         data.gpus = (data.gpus || []).map(gpu => ({...gpu, edit: {
-                            power_limit: gpu.configured?.power_limit ?? gpu.power_limit,
-                            clock_max: gpu.configured?.clock_max ?? gpu.clock_hardware_max,
-                            fan_percent: gpu.configured?.fan_auto ? 0 : (gpu.configured?.fan_percent ?? gpu.fan_speed ?? 0),
+                            power_limit: gpu.configured?.power_limit ?? gpu.recommended?.power_limit ?? gpu.power_limit,
+                            clock_max: gpu.configured?.clock_max ?? gpu.recommended?.clock_max ?? gpu.clock_hardware_max,
+                            fan_percent: gpu.configured?.fan_auto ? 0 : (gpu.configured?.fan_percent ?? gpu.recommended?.fan_percent ?? 0),
                         }}));
                         this.gpuTuning = data;
                     } catch (e) { console.warn(e); }
@@ -1144,13 +1201,22 @@
                     } catch(e) { alert('GPU 설정 적용 실패: ' + e.message); } finally { this.gpuTuningSaving=false; }
                 },
                 async resetGpuTuning(gpu) {
-                    if (!confirm(`GPU ${gpu.index}의 전력·클럭·팬을 NVIDIA 기본값으로 복원하고 부팅 설정도 바꿀까요?`)) return;
+                    if (!confirm(`GPU ${gpu.index}에 권장 기본값 ${gpu.recommended.power_limit}W / Core ${gpu.recommended.clock_max}MHz / Fan 자동을 적용하고 부팅 설정으로 저장할까요?`)) return;
                     this.gpuTuningSaving = true;
                     try {
                         const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'reset',gpu_index:gpu.index,gpu_uuid:gpu.uuid})});
                         const data=await res.json(); if(!res.ok) throw new Error(data.detail || '복원 실패');
                         await this.fetchGpuTuning(); await this.fetchGpuTopology();
                     } catch(e) { alert('GPU 기본값 복원 실패: '+e.message); } finally { this.gpuTuningSaving=false; }
+                },
+                async disableGpuTuning(gpu) {
+                    if (!confirm(`GPU ${gpu.index}의 저장 설정 적용을 끌까요?\n\n현재 실행 중인 전력·클럭 값은 갑자기 바뀌지 않으며, 다음 부팅부터 이 GPU를 건너뜁니다.`)) return;
+                    this.gpuTuningSaving = true;
+                    try {
+                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'disable',gpu_index:gpu.index,gpu_uuid:gpu.uuid})});
+                        const data=await res.json(); if(!res.ok) throw new Error(data.detail || '비활성화 실패');
+                        await this.fetchGpuTuning();
+                    } catch(e) { alert('GPU 설정 비활성화 실패: '+e.message); } finally { this.gpuTuningSaving=false; }
                 },
                 async saveAutoStart() {
                     try {
@@ -1272,6 +1338,16 @@
                     }
                 },
 
+                async fetchSunshineMonitorOff() {
+                    if (this.sunshineMonitorOff.saving) return;
+                    try {
+                        const res = await fetch('/api/sunshine/monitor-off-on-connect');
+                        if (!res.ok) throw new Error(await res.text());
+                        const data = await res.json();
+                        this.sunshineMonitorOff.enabled = !!data.enabled;
+                    } catch(e) {}
+                },
+
                 async fetchStatus() {
                     if (this.isRestarting) return; 
                     this.loading.status = true;
@@ -1348,7 +1424,7 @@
                 async toggleDesktopMode() {
                     const target = this.desktop.mode === 'gui' ? 'cli' : 'gui';
                     const label = target === 'gui' ? 'GUI (그래픽)' : '컴퓨트 (GDM 중지)';
-                    if (!confirm(`[데스크톱 모드 전환]\n\n현재: ${this.desktop.mode === 'gui' ? 'GUI' : '컴퓨트'} 모드\n전환: ${label} 모드\n\n컴퓨트 모드는 GDM을 중지하고 물리 화면을 tty1 로그인 콘솔로 전환합니다. AI 서버·SSH·SMB와 독립 XRDP 세션은 계속 실행되지만 3390 화면 공유는 GUI 로그인 세션을 다시 열 때까지 사용할 수 없습니다. 휴대폰 브라우저의 이 대시보드에서 GUI를 복구할 수 있습니다.\n\n계속하시겠습니까?`)) {
+                    if (!confirm(`[데스크톱 모드 전환]\n\n현재: ${this.desktop.mode === 'gui' ? 'GUI' : '컴퓨트'} 모드\n전환: ${label} 모드\n\n컴퓨트 모드는 GDM을 중지하고 물리 화면을 tty1 로그인 콘솔로 전환합니다. AI 서버·SSH·SMB와 시스템 3389는 계속 실행되지만 3390과 Sunshine은 GUI 자동 로그인 세션이 다시 열릴 때까지 중지됩니다. 휴대폰 브라우저의 이 대시보드에서 GUI를 복구할 수 있습니다.\n\n계속하시겠습니까?`)) {
                         return;
                     }
                     this.desktop.switching = true;
@@ -1387,6 +1463,23 @@
                     } finally {
                         this.monitorPower.switching = '';
                         setTimeout(() => this.fetchMonitorPower(), 1000);
+                    }
+                },
+
+                async toggleSunshineMonitorOff() {
+                    const enabled = !this.sunshineMonitorOff.enabled;
+                    this.sunshineMonitorOff.saving = true;
+                    try {
+                        const res = await fetch('/api/sunshine/monitor-off-on-connect', {
+                            method: 'POST', headers: {'Content-Type':'application/json'},
+                            body: JSON.stringify({enabled})
+                        });
+                        if (!res.ok) throw new Error(await res.text());
+                        this.sunshineMonitorOff.enabled = enabled;
+                    } catch(e) {
+                        alert('Moonlight 자동 화면끄기 설정 실패: ' + e.message);
+                    } finally {
+                        this.sunshineMonitorOff.saving = false;
                     }
                 },
 
@@ -1775,6 +1868,7 @@
                 await this.fetchMemo();
                 await this.fetchComfySettings();
                 await this.fetchGpuTopology();
+                await this.fetchGpuThermalEvents();
                 await this.fetchAutoStart();
                 await this.fetchGpuTuning();
                 this.fetchScanData();
@@ -1782,14 +1876,17 @@
                 this.fetchHardware();
                 this.fetchDesktopMode();
                 this.fetchMonitorPower();
+                this.fetchSunshineMonitorOff();
                 
                 setInterval(() => {
                     this.fetchStatus();
                     this.fetchHardware();
                     this.fetchGpuTopology();
                     this.fetchDesktopMode();
-                    this.fetchMonitorPower();
+                    this.fetchSunshineMonitorOff();
                 }, 2000);
+                setInterval(() => this.fetchMonitorPower(), 5000);
+                setInterval(() => this.fetchGpuThermalEvents(), 5000);
             }
         }).mount('#app');
     </script>

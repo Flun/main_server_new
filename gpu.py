@@ -18,6 +18,9 @@ GPU_SERVICE_LABELS = {
     "system": {"label": "OS / 디스플레이 / 드라이버", "color": "zinc"},
 }
 
+_EXTENDED_SENSOR_CACHE = {"time": 0.0, "values": {}}
+_EXTENDED_SENSOR_LOCK = threading.Lock()
+
 
 def _run(cmd, timeout=6):
     try:
@@ -149,10 +152,50 @@ def _nvidia_smi_backend():
     return gpus or None
 
 
+def _extended_nvidia_sensors():
+    """Read sensors missing from pynvml, with a short shared subprocess cache."""
+    now = time.monotonic()
+    with _EXTENDED_SENSOR_LOCK:
+        if now - _EXTENDED_SENSOR_CACHE["time"] < 1.0:
+            return _EXTENDED_SENSOR_CACHE["values"]
+        out = _run(
+            [
+                "nvidia-smi",
+                "--query-gpu=uuid,temperature.memory,utilization.memory,clocks.current.memory",
+                "--format=csv,noheader,nounits",
+            ]
+        )
+        values = {}
+        for line in out.strip().splitlines():
+            parts = [item.strip() for item in line.split(",")]
+            if len(parts) != 4:
+                continue
+
+            def integer(value):
+                try:
+                    return int(float(value))
+                except (TypeError, ValueError):
+                    return None
+
+            values[parts[0]] = {
+                "temp_memory": integer(parts[1]),
+                "memory_controller_util": integer(parts[2]),
+                "clock_memory": integer(parts[3]),
+            }
+        _EXTENDED_SENSOR_CACHE.update({"time": now, "values": values})
+        return values
+
+
 def get_gpus():
     for backend in (_nvml_backend, _nvidia_smi_backend):
         gpus = backend()
         if gpus:
+            extended = _extended_nvidia_sensors()
+            for gpu in gpus:
+                gpu.update(extended.get(gpu.get("uuid"), {
+                    "temp_memory": None, "memory_controller_util": None,
+                    "clock_memory": None,
+                }))
             return gpus
     return []
 
