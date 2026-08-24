@@ -112,12 +112,24 @@ def _leaf_name(name: str) -> str:
 
 
 def _fs_roots() -> list[dict[str, str]]:
-    candidates = [
-        ("파일 시스템", Path("/")), ("내 홈", Path.home()),
-        ("서비스", Path("/srv")), ("마운트", Path("/mnt")),
-        ("외장/추가 볼륨", Path("/media") / os.environ.get("USER", "flux")),
-        ("임시 폴더", Path("/tmp")),
-    ]
+    if os.name == "nt":
+        candidates = [
+            ("내 홈", Path.home()),
+            ("데스크톱", Path.home() / "Desktop"),
+            ("다운로드", Path.home() / "Downloads"),
+            ("문서", Path.home() / "Documents"),
+        ]
+        for letter in "CDEFGHIJK":
+            drive = Path(f"{letter}:\\")
+            if drive.exists():
+                candidates.append((f"드라이브 {letter}:", drive))
+    else:
+        candidates = [
+            ("파일 시스템", Path("/")), ("내 홈", Path.home()),
+            ("서비스", Path("/srv")), ("마운트", Path("/mnt")),
+            ("외장/추가 볼륨", Path("/media") / os.environ.get("USER", "flux")),
+            ("임시 폴더", Path("/tmp")),
+        ]
     result, seen = [], set()
     for label, path in candidates:
         try:
@@ -132,10 +144,17 @@ def _fs_roots() -> list[dict[str, str]]:
 
 
 def _protected_trash_target(path: Path) -> bool:
-    protected = {
-        Path("/"), Path.home(), Path("/home"), Path("/usr"), Path("/etc"),
-        Path("/var"), Path("/opt"), Path("/srv"), Path("/mnt"), Path("/media"), Path("/tmp"),
-    }
+    if os.name == "nt":
+        protected = {Path.home()}
+        for letter in "CDEFGHIJK":
+            drive = Path(f"{letter}:\\")
+            if drive.exists():
+                protected.add(drive)
+    else:
+        protected = {
+            Path("/"), Path.home(), Path("/home"), Path("/usr"), Path("/etc"),
+            Path("/var"), Path("/opt"), Path("/srv"), Path("/mnt"), Path("/media"), Path("/tmp"),
+        }
     protected.add(Path(BASE_DIR).resolve())
     return path in protected
 

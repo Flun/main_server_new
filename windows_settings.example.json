@@ -1,0 +1,17 @@
+{
+  "comfyui_dir": "C:\ComfyUI_windows_portable\ComfyUI",
+  "comfyui_python": "C:\ComfyUI_windows_portable\python_embeded\python.exe",
+  "comfyui_port": "8188",
+  "llama_install_root": "C:\Users\<user>\.unsloth",
+  "llama_version_glob": "C:\Users\<user>\.unsloth\llama*",
+  "llama_port": "8080",
+  "model_root": "D:\model",
+  "bot_dir": "C:\Users\<user>\comfy_bridge",
+  "watcher_dir": "C:\Users\<user>\Documents\New project",
+  "autostart": false,
+  "autostart_llama": false,
+  "autostart_comfyui": false,
+  "autostart_bot": false,
+  "autostart_watcher": false,
+  "autostart_vllm": false
+}

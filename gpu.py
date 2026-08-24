@@ -295,9 +295,11 @@ def _classify_process(pid, process_name=""):
 
 
 def scan_vram_processes():
-    """GPU별 프로세스 (nvidia-smi) — 어떤 서비스가 VRAM을 쓰는지 직관적으로 보여주기 위함."""
-    if IS_WINDOWS:
-        return []
+    """GPU별 프로세스 (nvidia-smi) — 어떤 서비스가 VRAM을 쓰는지 직관적으로 보여주기 위함.
+
+    Windows의 nvidia-smi도 동일 쿼리를 지원합니다. 권한이 없는 프로세스는
+    used_gpu_memory가 [N/A]/[Insufficient Permissions]로 나와서 자연스럽게 스킵됩니다.
+    """
     out = _run(
         [
             "nvidia-smi",

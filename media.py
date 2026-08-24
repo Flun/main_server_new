@@ -49,6 +49,7 @@ def find_media_tool(name):
         Path("/usr/local/bin") / name,
         Path("/usr/bin") / name,
         Path("/opt/ffmpeg") / "bin" / name,
+        BASE_DIR / "ffmpeg" / "bin" / (name + ".exe" if os.name == "nt" else name),
     ]
     for candidate in local_candidates:
         if candidate.exists():

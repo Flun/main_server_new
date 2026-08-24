@@ -4,9 +4,32 @@ import os
 IS_WINDOWS = os.name == "nt"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_FILE = os.path.join(BASE_DIR, "linux_settings.json")
+# 설정 파일은 플랫폼별로 분리해 Linux/Windows 설치 환경이 같은 폴더를 공유해도
+# 서로의 경로를 오염시키지 않습니다.
+SETTINGS_FILE = os.path.join(BASE_DIR, "windows_settings.json" if IS_WINDOWS else "linux_settings.json")
 
-DEFAULTS = {
+def _default_user_profile():
+    """실제 사용자 프로필 경로.
+
+    Windows에서 USERPROFILE 환경 변수가 실행 도구(샌드박스/IDE 등)에 의해
+    오버라이드될 수 있으므로, 'X:\\Users\\<이름>' 형태인지 검증하고 아니면
+    USERNAME+SYSTEMDRIVE로 직접 구성합니다.
+    """
+    value = os.environ.get("USERPROFILE", "")
+    parts = [p for p in value.replace("/", "\\").split("\\") if p]
+    if len(parts) == 3 and parts[1].lower() == "users" and os.path.isdir(value):
+        return value
+    username = os.environ.get("USERNAME") or os.environ.get("USER", "")
+    systemdrive = os.environ.get("SYSTEMDRIVE", "C:").rstrip("\\")
+    candidate = f"{systemdrive}\\Users\\{username}"
+    if username and os.path.isdir(candidate):
+        return candidate
+    return os.path.expanduser("~")
+
+
+_USERPROFILE = _default_user_profile()
+
+DEFAULTS_LINUX = {
     "server_root": "/home/flux",
     "comfyui_dir": "/opt/ComfyUI",
     "comfyui_python": "/opt/ComfyUI/venv/bin/python",
@@ -20,13 +43,35 @@ DEFAULTS = {
     "vllm_port": "8000",
     "bot_dir": "/opt/comfy_bridge",
     "watcher_dir": "/home/flux/Documents/New project",
+}
+
+DEFAULTS_WINDOWS = {
+    "server_root": _USERPROFILE,
+    # 이 머신의 실제 ComfyUI_windows_portable 레이아웃에 맞춘 기본값.
+    "comfyui_dir": r"C:\ComfyUI_windows_portable\ComfyUI",
+    "comfyui_python": r"C:\ComfyUI_windows_portable\python_embeded\python.exe",
+    "comfyui_port": "8188",
+    # 기존 .unsloth 빌드(llama.cpp)와 신규 llama-<tag> 설치 폴더를 함께 스캔합니다.
+    "llama_install_root": os.path.join(_USERPROFILE, ".unsloth"),
+    "llama_version_glob": os.path.join(_USERPROFILE, ".unsloth", "llama*"),
+    "llama_port": "8080",
+    "model_root": r"D:\model",
+    "vllm_env": r"C:\vllm-env",
+    "vllm_dflash_env": r"C:\vllm-dflash-env",
+    "vllm_port": "8000",
+    "bot_dir": os.path.join(_USERPROFILE, "comfy_bridge"),
+    "watcher_dir": os.path.join(_USERPROFILE, "Documents", "New project"),
+}
+
+DEFAULTS = dict(DEFAULTS_WINDOWS if IS_WINDOWS else DEFAULTS_LINUX)
+DEFAULTS.update({
     "autostart": False,
     "autostart_llama": False,
     "autostart_comfyui": False,
     "autostart_bot": False,
     "autostart_watcher": False,
     "autostart_vllm": False,
-}
+})
 
 ENV_MAP = {
     "server_root": "SERVER_ROOT",
@@ -58,14 +103,15 @@ class Settings:
 
     def reload(self):
         self._data = {}
-        if not IS_WINDOWS and os.path.exists(SETTINGS_FILE):
-            try:
-                with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
-                    loaded = json.load(f)
-                if isinstance(loaded, dict):
-                    self._data = loaded
-            except Exception:
-                self._data = {}
+        if not os.path.exists(SETTINGS_FILE):
+            return
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+            if isinstance(loaded, dict):
+                self._data = loaded
+        except Exception:
+            self._data = {}
 
     def get(self, key):
         if key in self._data and self._data[key] not in (None, ""):
@@ -79,8 +125,6 @@ class Settings:
         return {k: self.get(k) for k in DEFAULTS}
 
     def save(self, values):
-        if IS_WINDOWS:
-            raise PermissionError("linux_settings는 Linux에서만 사용합니다")
         merged = dict(self._data)
         merged.update({k: v for k, v in values.items() if k in DEFAULTS})
         with open(SETTINGS_FILE, "w", encoding="utf-8") as f:

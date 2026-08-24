@@ -1,4 +1,6 @@
 linux_settings.json
+windows_settings.json
+gpu_tune_settings.json
 presets.json
 hw_history.json
 last_run.json

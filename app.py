@@ -4,8 +4,10 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
+import zipfile
 from pathlib import Path
 
 import psutil
@@ -508,7 +510,24 @@ def _comfy_python():
     py = settings.get("comfyui_python")
     if py and os.path.isfile(py):
         return py
-    return "python3"
+    comfy_dir = settings.get("comfyui_dir")
+    if comfy_dir:
+        for rel in (
+            os.path.join("venv", "Scripts", "python.exe"),
+            os.path.join(".venv", "Scripts", "python.exe"),
+            os.path.join("venv", "bin", "python"),
+            os.path.join(".venv", "bin", "python"),
+        ):
+            candidate = os.path.join(comfy_dir, rel)
+            if os.path.isfile(candidate):
+                return candidate
+        # ComfyUI_windows_portable: python_embeded는 ComfyUI 소스 폴더의 상위 폴더에 있습니다.
+        portable_python = os.path.join(
+            os.path.dirname(os.path.abspath(comfy_dir)), "python_embeded", "python.exe"
+        )
+        if os.path.isfile(portable_python):
+            return portable_python
+    return "python" if IS_WINDOWS else "python3"
 
 
 def _comfy_env():
@@ -537,6 +556,8 @@ def _comfy_args():
 
 def _run_dir_python(dir_path, script="main.py"):
     for py in (
+        os.path.join(dir_path, "venv", "Scripts", "python.exe"),
+        os.path.join(dir_path, ".venv", "Scripts", "python.exe"),
         os.path.join(dir_path, "venv", "bin", "python"),
         os.path.join(dir_path, ".venv", "bin", "python"),
     ):
@@ -544,7 +565,7 @@ def _run_dir_python(dir_path, script="main.py"):
             return py
     if not os.path.isfile(os.path.join(dir_path, script)):
         raise HTTPException(400, f"{script} 파일이 없습니다: {dir_path}")
-    return "python3"
+    return "python" if IS_WINDOWS else "python3"
 
 
 # ---------- 하드웨어 샘플러 ----------
@@ -658,6 +679,32 @@ def _pid_cmdline_has(pid, needle):
         return False
 
 
+def _pid_in_dir(pid, dir_path):
+    """프로세스가 지정 폴더의 것이냐 — 절대 경로/상대 경로(portable)/cwd 모두 매칭.
+
+    ComfyUI_windows_portable은 `ComfyUI\\main.py` 같은 상대 경로로 실행되어
+    전체 경로 문자열 매칭만으로는 감지가 안 됩니다.
+    """
+    if not dir_path:
+        return True
+    try:
+        proc = psutil.Process(pid)
+        cmdline = " ".join(proc.cmdline() or [])
+        if dir_path in cmdline:
+            return True
+        try:
+            cwd = (proc.cwd() or "").replace("/", os.sep)
+            if cwd.lower() == os.path.normpath(dir_path).lower():
+                return True
+        except (psutil.AccessDenied, OSError):
+            pass
+        leaf = os.path.basename(os.path.normpath(dir_path))
+        joined = cmdline.replace("/", os.sep)
+        return f"{leaf}{os.sep}main.py" in joined
+    except Exception:
+        return False
+
+
 def _service_state(name):
     svc = services[name]
     st = svc.info()
@@ -671,7 +718,7 @@ def _service_state(name):
         pids = find_process(r"main\.py")
         comfy_dir = settings.get("comfyui_dir")
         if comfy_dir:
-            pids = [p for p in pids if _pid_cmdline_has(p, comfy_dir)]
+            pids = [p for p in pids if _pid_in_dir(p, comfy_dir)]
         if pids:
             st["running"] = True
             st["pid"] = pids[0]
@@ -1059,14 +1106,125 @@ def _build_llama_git(tag):
         scan_llama_versions()
 
 
+def _fetch_release_assets(tag):
+    import requests
+
+    res = requests.get(
+        f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}", timeout=20
+    )
+    res.raise_for_status()
+    return res.json().get("assets", []) or []
+
+
+def _asset_score(name):
+    """Windows 자산 우선순위: CUDA 빌드(버전 높은 것) > x64."""
+    n = str(name).lower()
+    score = 0
+    if "cuda" in n:
+        m = re.search(r"cuda[-_]?(\d+)(?:\.(\d+))?", n)
+        if m:
+            score += int(m.group(1)) * 100 + int(m.group(2) or 0)
+    if "x64" in n:
+        score += 1
+    return score
+
+
+def _pick_windows_asset(assets, preferred=""):
+    if preferred:
+        for asset in assets:
+            if asset.get("name") == preferred:
+                return asset
+        raise HTTPException(400, f"지정한 릴리스 자산이 없습니다: {preferred}")
+    candidates = [a for a in assets if "win" in a.get("name", "").lower() and "x64" in a.get("name", "").lower()]
+    if not candidates:
+        raise HTTPException(400, "Windows x64용 llama.cpp 릴리스 자산을 찾지 못했습니다")
+    candidates.sort(key=lambda a: (_asset_score(a["name"]), a["name"]), reverse=True)
+    return candidates[0]
+
+
+def _install_llama_windows(tag, asset_name=""):
+    """GitHub 릴리스의 Windows CUDA 프리빌트 zip을 내려받아 <root>/llama-<tag>에 설치한다."""
+    LLAMA_BUILD_STATE.update(busy=True, tag=tag, message="시작", started_at=time.time())
+    tmp_dir = os.path.join(BASE_DIR, "logs", "llama_install_tmp")
+    try:
+        import requests
+
+        _llama_install_log(f"===== llama.cpp {tag} Windows 설치 시작 =====")
+        LLAMA_BUILD_STATE["message"] = "릴리스 정보 조회"
+        assets = _fetch_release_assets(tag)
+        asset = _pick_windows_asset(assets, asset_name)
+        url = asset.get("download_url", "")
+        fname = asset.get("name", f"llama-{tag}.zip")
+        if not url or not fname.lower().endswith(".zip"):
+            raise RuntimeError(f"다운로드 가능한 zip 자산을 찾지 못했습니다: {fname}")
+
+        os.makedirs(tmp_dir, exist_ok=True)
+        zip_path = os.path.join(tmp_dir, fname)
+        _llama_install_log(f"다운로드: {url}")
+        LLAMA_BUILD_STATE["message"] = f"다운로드 중: {fname}"
+        with requests.get(url, stream=True, timeout=(20, 300)) as resp:
+            resp.raise_for_status()
+            total = int(resp.headers.get("Content-Length") or 0)
+            done = 0
+            last_pct = -1
+            with open(zip_path, "wb") as f:
+                for chunk in resp.iter_content(chunk_size=1024 * 256):
+                    if not chunk:
+                        continue
+                    f.write(chunk)
+                    done += len(chunk)
+                    pct = int(done * 100 / total) if total else 0
+                    if pct >= last_pct + 5:
+                        last_pct = pct
+                        _llama_install_log(f"다운로드 {pct}% ({done // (1024 * 1024)} MB)")
+
+        LLAMA_BUILD_STATE["message"] = "압축 해제 중"
+        stage_dir = os.path.join(tmp_dir, f"extract-{tag}")
+        if os.path.exists(stage_dir):
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        os.makedirs(stage_dir, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(stage_dir)
+
+        # zip이 단일 최상위 폴더로 묶여 있으면 그 내용을 한 단계 끌어올린다.
+        entries = [e for e in os.listdir(stage_dir) if not e.startswith(".")]
+        if len(entries) == 1 and os.path.isdir(os.path.join(stage_dir, entries[0])):
+            inner = os.path.join(stage_dir, entries[0])
+            for item in os.listdir(inner):
+                shutil.move(os.path.join(inner, item), os.path.join(stage_dir, item))
+            os.rmdir(inner)
+
+        if not _llama_server_exe(stage_dir):
+            raise RuntimeError("압축 파일 안에 llama-server 실행 파일을 찾지 못했습니다")
+
+        install_dir = os.path.join(settings.get("llama_install_root"), f"llama-{tag}")
+        if os.path.exists(install_dir):
+            shutil.rmtree(install_dir, ignore_errors=True)
+        os.makedirs(os.path.dirname(install_dir), exist_ok=True)
+        shutil.move(stage_dir, install_dir)
+        _llama_install_log(f"설치 완료: {install_dir}")
+        LLAMA_BUILD_STATE["message"] = f"설치 완료: {install_dir}"
+    except Exception as e:
+        _llama_install_log(f"설치 실패: {e}")
+        LLAMA_BUILD_STATE["message"] = f"실패: {e}"
+    finally:
+        try:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+        except OSError:
+            pass
+        LLAMA_BUILD_STATE["busy"] = False
+        scan_llama_versions()
+
+
 @app.post("/api/llama/install")
-def llama_install(tag: str = ""):
+def llama_install(tag: str = "", asset: str = ""):
     tag = _safe_tag(tag)
     if LLAMA_BUILD_STATE["busy"]:
         raise HTTPException(409, "이미 빌드가 진행 중입니다.")
     if IS_WINDOWS:
-        raise HTTPException(400, "git 빌드는 Linux에서만 사용합니다")
-    threading.Thread(target=_build_llama_git, args=(tag,), daemon=True).start()
+        threading.Thread(target=_install_llama_windows, args=(tag, asset), daemon=True).start()
+    else:
+        threading.Thread(target=_build_llama_git, args=(tag,), daemon=True).start()
     return {"ok": True, "tag": tag, "state": LLAMA_BUILD_STATE}
 
 
@@ -1269,32 +1427,225 @@ def presets_save(presets: dict):
 
 # ---------- 설정 / 관리 ----------
 
-@app.get("/api/linux-settings")
-def linux_settings_get():
+MANAGER_TASK_NAME = "MainServer"
+
+
+def _windows_manager_service():
+    """Task Scheduler의 MainServer 태스크 상태 — Windows에서 manager 자동 시작 경로.
+
+    Linux의 systemd user service(linger)와 동일한 역할을 합니다.
+    """
+    unit = f"TaskScheduler:\\{MANAGER_TASK_NAME}"
+    base = {"enabled": False, "unit": unit, "label": "Task Scheduler"}
+    try:
+        result = subprocess.run(
+            ["schtasks", "/query", "/tn", MANAGER_TASK_NAME],
+            capture_output=True, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return base
+    if result.returncode != 0:
+        return base
+    base["enabled"] = True
+    return base
+
+
+def _manager_service_status():
     if IS_WINDOWS:
-        return {"platform": "windows", "settings": {}, "effective": {}}
+        return _windows_manager_service()
     enabled = subprocess.run(
         ["systemctl", "--user", "is-enabled", "main_server.service"],
         capture_output=True, text=True,
     ).returncode == 0
+    return {"enabled": enabled, "unit": "main_server.service", "label": "systemd"}
+
+
+@app.get("/api/linux-settings")
+def linux_settings_get():
     return {
-        "platform": "linux", "settings": settings.all(), "effective": settings.all(),
-        "manager_service": {"enabled": enabled, "unit": "main_server.service", "linger": True},
+        "platform": "windows" if IS_WINDOWS else "linux",
+        "settings": settings.all(),
+        "effective": settings.all(),
+        "manager_service": _manager_service_status(),
     }
 
 
 @app.post("/api/linux-settings")
 def linux_settings_save(data: dict):
-    if IS_WINDOWS:
-        raise HTTPException(400, "linux_settings는 Linux에서만 사용합니다")
     effective = settings.save(data)
     scan_llama_versions()
     scan_gguf_models()
     return {"ok": True, "effective": effective}
 
 
+@app.post("/api/manager-service/register")
+def manager_service_register():
+    """Windows: 로그온 시 start_manager.bat을 실행하는 Task Scheduler 태스크 등록."""
+    if not IS_WINDOWS:
+        raise HTTPException(400, "Windows 전용입니다 (Linux는 main_server.service를 사용합니다)")
+    import autostart_service
+
+    try:
+        autostart_service.register()
+    except Exception as error:
+        raise HTTPException(500, f"태스크 등록 실패: {error}") from error
+    return {"ok": True, "manager_service": _manager_service_status()}
+
+
+@app.post("/api/manager-service/unregister")
+def manager_service_unregister():
+    if not IS_WINDOWS:
+        raise HTTPException(400, "Windows 전용입니다 (Linux는 main_server.service를 사용합니다)")
+    import autostart_service
+
+    try:
+        autostart_service.unregister()
+    except Exception as error:
+        raise HTTPException(500, f"태스크 삭제 실패: {error}") from error
+    return {"ok": True, "manager_service": _manager_service_status()}
+
+
 GPU_CONTROL_HELPER = "/usr/local/sbin/main-server-gpu-control"
 GPU_TUNE_CONFIG_DIR = "/etc/main-server/gpu-tune.d"
+# Windows는 root helper 대신 nvidia-smi를 직접 호출하고, 영속 설정을
+# main_server 루트의 JSON 파일에 둡니다. manager 시작 시 다시 적용해
+# Linux gpu-tune.service와 같은 부팅 유지 동작을 제공합니다.
+GPU_TUNE_SETTINGS_FILE = os.path.join(BASE_DIR, "gpu_tune_settings.json")
+
+
+def _load_configured_gpu_tuning():
+    """UUID별 저장된 GPU 튜닝 설정 (Linux: /etc/main-server/gpu-tune.d, Windows: gpu_tune_settings.json)."""
+    configured_by_uuid = {}
+    if IS_WINDOWS:
+        data = _read_json(GPU_TUNE_SETTINGS_FILE, {})
+        if isinstance(data, dict):
+            for uuid_key, values in data.items():
+                if isinstance(values, dict) and str(uuid_key).startswith("GPU-"):
+                    configured_by_uuid[str(uuid_key)] = {
+                        "TUNING_ENABLED": int(bool(values.get("enabled", True))),
+                        "POWER_LIMIT": values.get("power_limit"),
+                        "CLOCK_MAX": values.get("clock_max"),
+                        "FAN_PERCENT": values.get("fan_percent"),
+                        "FAN_AUTO": int(bool(values.get("fan_auto", False))),
+                        "CLOCK_AUTO": int(bool(values.get("clock_auto", False))),
+                    }
+        return configured_by_uuid
+    for path in Path(GPU_TUNE_CONFIG_DIR).glob("GPU-*.conf"):
+        values = _read_gpu_tuning_config(path)
+        if values.get("GPU_UUID"):
+            configured_by_uuid[values["GPU_UUID"]] = values
+    return configured_by_uuid
+
+
+def _save_gpu_tuning_windows(uuid_key, enabled, power_limit=None, clock_max=None, fan_percent=None):
+    data = _read_json(GPU_TUNE_SETTINGS_FILE, {})
+    if not isinstance(data, dict):
+        data = {}
+    data[uuid_key] = {
+        "enabled": bool(enabled),
+        "power_limit": power_limit,
+        "clock_max": clock_max,
+        "fan_percent": fan_percent or 0,
+        "fan_auto": not fan_percent,
+        "clock_auto": False,
+    }
+    _write_json(GPU_TUNE_SETTINGS_FILE, data)
+
+
+def _run_nvidia_smi(args):
+    try:
+        result = subprocess.run(["nvidia-smi"] + list(args), capture_output=True, text=True, timeout=20)
+    except (OSError, subprocess.SubprocessError) as error:
+        raise HTTPException(503, f"nvidia-smi 실행 실패: {error}") from error
+    if result.returncode:
+        detail = (result.stderr or result.stdout or "").strip()
+        # 일부 드라이버/세션에서는 관리자 권한이 필요한 튜닝 명령을 거부합니다.
+        raise HTTPException(400, detail or "GPU 설정 적용 실패")
+    return result.stdout.strip()
+
+
+def _gpu_index_by_uuid(uuid_key):
+    out = subprocess.run(
+        ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+        capture_output=True, text=True, timeout=8,
+    ).stdout
+    for line in out.splitlines():
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 2 and parts[1] == uuid_key:
+            return parts[0]
+    raise HTTPException(400, f"GPU UUID를 찾지 못했습니다: {uuid_key}")
+
+
+def _gpu_tuning_apply_values(uuid_key, power, clock, fan):
+    """nvidia-smi로 전력/클럭/팬 값을 실제 GPU에 적용한다. 팬은 미지원 시 경고만 남긴다."""
+    warnings = []
+    index = _gpu_index_by_uuid(uuid_key)
+    i_args = ["-i", index]
+    if power:
+        _run_nvidia_smi(i_args + ["-pl", str(int(power))])
+    if clock:
+        _run_nvidia_smi(i_args + ["-lgc", f"{int(clock)},{int(clock)}"])
+    if fan and int(fan) > 0:
+        try:
+            _run_nvidia_smi(i_args + ["--fan", str(int(fan))])
+        except HTTPException as exc:
+            warnings.append(f"팬 설정은 이 GPU/드라이버에서 적용되지 않았습니다: {exc.detail}")
+    return warnings
+
+
+def _gpu_tuning_set_windows(uuid_key, action, power=None, clock=None, fan=None):
+    if action == "set":
+        if not power or not clock:
+            raise HTTPException(400, "power_limit과 clock_max가 필요합니다")
+        warnings = _gpu_tuning_apply_values(uuid_key, power, clock, fan)
+        _save_gpu_tuning_windows(uuid_key, enabled=True, power_limit=power, clock_max=clock, fan_percent=fan or 0)
+    elif action == "reset":
+        snapshot = _gpu_tuning_snapshot()
+        target = next((g for g in snapshot["gpus"] if g["uuid"] == uuid_key), None)
+        if not target:
+            raise HTTPException(400, f"GPU UUID를 찾지 못했습니다: {uuid_key}")
+        recommended = target.get("recommended") or {}
+        power = recommended.get("power_limit") or target.get("power_default")
+        clock = recommended.get("clock_max") or target.get("clock_hardware_max")
+        fan = 0
+        warnings = _gpu_tuning_apply_values(uuid_key, power, clock, fan)
+        _save_gpu_tuning_windows(uuid_key, enabled=True, power_limit=power, clock_max=clock, fan_percent=0)
+    elif action == "disable":
+        data = _read_json(GPU_TUNE_SETTINGS_FILE, {})
+        entry = data.get(uuid_key) if isinstance(data, dict) else None
+        if not isinstance(entry, dict):
+            entry = {"power_limit": power, "clock_max": clock, "fan_percent": fan or 0}
+        entry["enabled"] = False
+        _save_gpu_tuning_windows(uuid_key, enabled=False,
+                                 power_limit=entry.get("power_limit"),
+                                 clock_max=entry.get("clock_max"),
+                                 fan_percent=entry.get("fan_percent"))
+        warnings = []
+    else:
+        raise HTTPException(400, "지원하지 않는 작업입니다")
+    time.sleep(0.3)
+    snapshot = _gpu_tuning_snapshot()
+    message = "; ".join(warnings) if warnings else "GPU 설정이 적용되었습니다"
+    snapshot.update({"ok": True, "message": message})
+    return snapshot
+
+
+def _apply_saved_gpu_tuning():
+    """manager 시작 시 저장된 Windows GPU 튜닝을 다시 적용 (부팅 유지 상당)."""
+    if not IS_WINDOWS:
+        return
+    data = _read_json(GPU_TUNE_SETTINGS_FILE, {})
+    if not isinstance(data, dict):
+        return
+    for uuid_key, entry in data.items():
+        if not isinstance(entry, dict) or not entry.get("enabled"):
+            continue
+        try:
+            _gpu_tuning_apply_values(
+                uuid_key, entry.get("power_limit"), entry.get("clock_max"), entry.get("fan_percent")
+            )
+        except Exception as error:
+            print(f"[gpu-tune] {uuid_key} 저장 설정 적용 실패: {error}")
 
 
 def _read_gpu_tuning_config(path):
@@ -1326,11 +1677,7 @@ def _gpu_tuning_snapshot():
     )
     if result.returncode:
         raise HTTPException(503, result.stderr.strip() or "NVIDIA GPU 정보를 읽지 못했습니다")
-    configured_by_uuid = {}
-    for path in Path(GPU_TUNE_CONFIG_DIR).glob("GPU-*.conf"):
-        values = _read_gpu_tuning_config(path)
-        if values.get("GPU_UUID"):
-            configured_by_uuid[values["GPU_UUID"]] = values
+    configured_by_uuid = _load_configured_gpu_tuning()
     def number(value, integer=False):
         value = value.strip()
         if value in {"", "N/A", "[N/A]"}:
@@ -1375,42 +1722,60 @@ def _gpu_tuning_snapshot():
             }
         gpus.append(gpu)
     return {
-        "available": bool(gpus), "gpus": gpus, "service": "gpu-tune.service",
+        "available": bool(gpus), "gpus": gpus,
+        "service": "manager-autostart" if IS_WINDOWS else "gpu-tune.service",
         "tuning_mode": "power_and_clock_cap", "voltage_target_supported": False,
     }
 
 
 @app.get("/api/gpu/tuning")
 def gpu_tuning_get():
-    if IS_WINDOWS:
-        raise HTTPException(400, "Linux NVIDIA 환경에서만 지원합니다")
     return _gpu_tuning_snapshot()
 
 
 @app.post("/api/gpu/tuning")
 def gpu_tuning_set(data: dict):
-    if IS_WINDOWS:
-        raise HTTPException(400, "Linux NVIDIA 환경에서만 지원합니다")
-    if not os.path.isfile(GPU_CONTROL_HELPER):
+    if not IS_WINDOWS and not os.path.isfile(GPU_CONTROL_HELPER):
         raise HTTPException(503, "GPU 제어 helper가 설치되지 않았습니다")
     action = str(data.get("action") or "set")
     try:
         gpu_selector = str(data.get("gpu_uuid") or data.get("gpu_index", 0))
         if not (gpu_selector.isdigit() or re.fullmatch(r"GPU-[A-Za-z0-9-]+", gpu_selector)):
             raise ValueError("GPU 식별자가 올바르지 않습니다")
+        power = int(data["power_limit"]) if action == "set" else None
+        clock = int(data["clock_max"]) if action == "set" else None
+        fan = int(data["fan_percent"]) if action == "set" else None
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(400, f"GPU 설정값이 올바르지 않습니다: {error}") from error
+
+    if IS_WINDOWS:
+        uuid_key = gpu_selector
+        if uuid_key.isdigit():
+            # 인덱스로 왔으면 UUID로 바꾼다 (UUID 기반 저장 정책 유지)
+            out = subprocess.run(
+                ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
+                capture_output=True, text=True, timeout=8,
+            ).stdout
+            uuid_key = next(
+                (line.split(",")[1].strip() for line in out.splitlines()
+                 if line.strip().split(",")[0].strip() == uuid_key),
+                None,
+            )
+            if not uuid_key:
+                raise HTTPException(400, f"GPU 인덱스를 찾지 못했습니다: {gpu_selector}")
+        return _gpu_tuning_set_windows(uuid_key, action, power, clock, fan)
+
+    try:
         if action == "reset":
             command = ["sudo", "-n", GPU_CONTROL_HELPER, "reset", gpu_selector]
         elif action == "disable":
             command = ["sudo", "-n", GPU_CONTROL_HELPER, "disable", gpu_selector]
         elif action == "set":
-            power = int(data["power_limit"])
-            clock = int(data["clock_max"])
-            fan = int(data["fan_percent"])
             command = ["sudo", "-n", GPU_CONTROL_HELPER, "set", gpu_selector, str(power), str(clock), str(fan)]
         else:
             raise ValueError("지원하지 않는 작업입니다")
-    except (KeyError, TypeError, ValueError) as error:
-        raise HTTPException(400, f"GPU 설정값이 올바르지 않습니다: {error}") from error
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
     result = subprocess.run(command, capture_output=True, text=True, timeout=20)
     if result.returncode:
         raise HTTPException(400, result.stderr.strip() or result.stdout.strip() or "GPU 설정 적용 실패")
@@ -1502,16 +1867,36 @@ def open_terminal(target: str):
 
 @app.post("/api/restart")
 def restart():
-    if IS_WINDOWS:
-        raise HTTPException(400, "재시작은 Linux에서만 지원합니다")
     threading.Thread(target=_restart_now, daemon=True).start()
     return {"ok": True}
 
 
 def _restart_now():
+    if IS_WINDOWS:
+        # systemd가 없으므로 분리 프로세스(manager_restarter.py)가 포트 8999가
+        # 비어질 때까지 대기한 뒤 manager를 다시 띄웁니다. start_manager.bat
+        # 감독 루프가 동시에 재시작해도 포트 선점 경쟁에서 지는 쪽은 즉시 종료되어
+        # 중복/orphan 프로세스가 남지 않습니다.
+        helper = os.path.join(BASE_DIR, "manager_restarter.py")
+        try:
+            subprocess.Popen(
+                [sys.executable, helper],
+                cwd=BASE_DIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                stdin=subprocess.DEVNULL,
+                creationflags=(
+                    getattr(subprocess, "DETACHED_PROCESS", 0)
+                    | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                ),
+            )
+        except Exception as error:
+            print(f"[restart] restarter spawn 실패: {error}")
     time.sleep(0.5)
-    # systemd의 Restart=always가 새 manager를 하나만 기동합니다. 여기서 직접
-    # app.py를 spawn하면 systemd 재기동과 경합해 8999를 점유하는 orphan이 생깁니다.
+    if not IS_WINDOWS:
+        # systemd의 Restart=always가 새 manager를 하나만 기동합니다. 여기서 직접
+        # app.py를 spawn하면 systemd 재기동과 경합해 8999를 점유하는 orphan이 생깁니다.
+        pass
     os._exit(0)
 
 
@@ -1589,6 +1974,8 @@ def _monitor_power(action="status", timeout=30):
 
 @app.get("/api/monitor/power")
 def monitor_power_get():
+    if IS_WINDOWS:
+        return {"available": False, "state": "unknown", "count": 0, "error": "Linux only"}
     return _monitor_power()
 
 
@@ -1663,6 +2050,12 @@ def startup():
     scan_llama_versions()
     scan_gguf_models()
     _sample_hw()
+    try:
+        # Windows: 저장된 GPU 전력/클럭 설정을 서비스 시작 전에 다시 적용
+        # (Linux gpu-tune.service의 부팅 유지 동작 상당).
+        _apply_saved_gpu_tuning()
+    except Exception as error:
+        print(f"[gpu-tune] 저장 설정 적용 실패: {error}")
     if _guard_thread is None or not _guard_thread.is_alive():
         _guard_thread = threading.Thread(
             target=_run_guard_server,

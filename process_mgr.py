@@ -31,6 +31,14 @@ class Service:
 
     def _pid_alive(self, pid):
         try:
+            import psutil
+            if not psutil.pid_exists(pid):
+                return False
+            proc = psutil.Process(pid)
+            return proc.is_running() and proc.status() != psutil.STATUS_ZOMBIE
+        except Exception:
+            pass
+        try:
             os.kill(pid, 0)
             return True
         except (OSError, ProcessLookupError):
@@ -161,21 +169,27 @@ def tail(path, n=300):
 
 
 def find_process(pattern):
-    """패턴(정규식, cmdline 매칭)에 해당하는 PID 목록 — 우리가 관리 안 하는 외부 프로세스 감지용."""
-    if os.name == "nt":
-        return []
+    """패턴(정규식, cmdline 매칭)에 해당하는 PID 목록 — 우리가 관리 안 하는 외부 프로세스 감지용.
+
+    psutil 기반이라 Windows/Linux 모두 동일하게 동작합니다.
+    """
     import re
 
-    out = subprocess.run(["ps", "-eo", "pid,args"], capture_output=True, text=True).stdout
     found = []
-    for line in out.splitlines():
-        parts = line.split(None, 1)
-        if len(parts) != 2:
-            continue
-        pid, args = parts
-        try:
-            if re.search(pattern, args):
-                found.append(int(pid))
-        except re.error:
-            continue
+    try:
+        import psutil
+        for proc in psutil.process_iter(["pid", "cmdline"]):
+            try:
+                cmdline = " ".join(proc.info.get("cmdline") or [])
+            except (psutil.AccessDenied, psutil.ZombieProcess, psutil.NoSuchProcess):
+                continue
+            if not cmdline:
+                continue
+            try:
+                if re.search(pattern, cmdline):
+                    found.append(proc.pid)
+            except re.error:
+                continue
+    except Exception:
+        return []
     return found

@@ -11,6 +11,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import threading
 import time
 from pathlib import Path
@@ -19,7 +20,7 @@ from typing import Any
 import requests
 from fastapi import APIRouter, HTTPException
 
-from config import BASE_DIR, settings
+from config import BASE_DIR, DEFAULTS, settings
 from process_mgr import Service, tail
 
 
@@ -82,15 +83,21 @@ def _default_model_path(model_root: str) -> str:
     return str(snapshot) if snapshot.exists() else MODEL_ID
 
 
+def _venv_python(env_path: Path) -> Path:
+    if os.name == "nt":
+        return env_path / "Scripts" / "python.exe"
+    return env_path / "bin" / "python"
+
+
 def defaults() -> dict[str, Any]:
     model_root = _current_model_root()
     return {
-        "server_root": str(settings.get("server_root") or "/home/flux"),
+        "server_root": str(settings.get("server_root") or DEFAULTS["server_root"]),
         "model_root": model_root,
         "comfyui_dir": str(settings.get("comfyui_dir")),
         "llama_install_root": str(settings.get("llama_install_root")),
-        "vllm_env": str(settings.get("vllm_env") or "/home/flux/vllm-env"),
-        "vllm_dflash_env": str(settings.get("vllm_dflash_env") or "/home/flux/vllm-dflash-env"),
+        "vllm_env": str(settings.get("vllm_env") or DEFAULTS["vllm_env"]),
+        "vllm_dflash_env": str(settings.get("vllm_dflash_env") or DEFAULTS["vllm_dflash_env"]),
         "vllm_model": _default_model_path(model_root),
         "dflash_model": DFLASH_MODEL_ID,
         "profile": "mtp",
@@ -115,6 +122,18 @@ def load_settings() -> dict[str, Any]:
     return result
 
 
+def _looks_like_local_path(value: str) -> bool:
+    """Hugging Face ID와 구별하기 위한 로컬 경로 판별 (Windows 드라이브 문자 포함)."""
+    value = str(value or "").strip()
+    if not value:
+        return False
+    if value.startswith(("/", "~", ".")):
+        return True
+    if os.name == "nt" and re.match(r"^[A-Za-z]:[\\/]", value):
+        return True
+    return False
+
+
 def _absolute_directory(value: Any, field: str) -> str:
     raw = os.path.expandvars(os.path.expanduser(str(value or "").strip()))
     if not raw or not os.path.isabs(raw):
@@ -133,7 +152,7 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
     model_value = str(merged.get("vllm_model") or "").strip()
     if not model_value:
         raise HTTPException(400, "vLLM 모델 경로 또는 Hugging Face ID가 필요합니다")
-    if model_value.startswith(('/', '~', '.')):
+    if _looks_like_local_path(model_value):
         merged["vllm_model"] = _absolute_directory(model_value, "vllm_model")
     try:
         merged["port"] = int(merged["port"])
@@ -152,13 +171,14 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(400, "GPU 목록은 0,1 형식으로 입력하세요")
 
     _write_json(INFRA_SETTINGS_FILE, merged)
+    comfy_dir = Path(merged["comfyui_dir"])
     settings.save({
         "server_root": merged["server_root"],
         "model_root": merged["model_root"],
         "comfyui_dir": merged["comfyui_dir"],
-        "comfyui_python": str(Path(merged["comfyui_dir"]) / "venv" / "bin" / "python"),
+        "comfyui_python": str(_venv_python(comfy_dir)),
         "llama_install_root": merged["llama_install_root"],
-        "llama_version_glob": str(Path(merged["llama_install_root"]) / "llama-*"),
+        "llama_version_glob": str(Path(merged["llama_install_root"]) / ("llama-*" if os.name != "nt" else "llama*")),
         "vllm_env": merged["vllm_env"],
         "vllm_dflash_env": merged["vllm_dflash_env"],
         "vllm_port": str(merged["port"]),
@@ -225,10 +245,10 @@ def _path_state(path: str) -> dict[str, Any]:
 
 def runtime_status() -> dict[str, Any]:
     configured = load_settings()
-    stable_version = _python_version(Path(configured["vllm_env"]) / "bin" / "python")
-    dflash_version = _python_version(Path(configured["vllm_dflash_env"]) / "bin" / "python")
+    stable_version = _python_version(_venv_python(Path(configured["vllm_env"])))
+    dflash_version = _python_version(_venv_python(Path(configured["vllm_dflash_env"])))
     model = configured["vllm_model"]
-    model_local = model.startswith("/")
+    model_local = os.path.isabs(model)
     model_ok = Path(model).is_dir() if model_local else True
     gpus = _gpu_snapshot()
     selected = {
@@ -285,10 +305,11 @@ def _run_logged(command: list[str], *, cwd: str | None = None) -> None:
 
 def _ensure_venv(path: str) -> Path:
     env_path = Path(path)
-    python = env_path / "bin" / "python"
+    python = _venv_python(env_path)
     if not python.is_file():
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        _run_logged([shutil.which("python3") or "python3", "-m", "venv", str(env_path)])
+        base_python = sys.executable or (shutil.which("python") or shutil.which("python3") or "python3")
+        _run_logged([base_python, "-m", "venv", str(env_path)])
     return python
 
 
@@ -337,15 +358,22 @@ def _extra_args(raw: str) -> list[str]:
     return values
 
 
+def _venv_entrypoint(env_path: Path, name: str) -> Path:
+    """venv 내부 실행 파일 경로 (Windows: Scripts/<name>.exe, POSIX: bin/<name>)."""
+    if os.name == "nt":
+        return env_path / "Scripts" / f"{name}.exe"
+    return env_path / "bin" / name
+
+
 def build_vllm_command(configured: dict[str, Any] | None = None) -> tuple[list[str], dict[str, str]]:
     configured = configured or load_settings()
     profile = configured["profile"]
     env_root = configured["vllm_dflash_env"] if profile == "dflash" else configured["vllm_env"]
-    executable = Path(env_root) / "bin" / "vllm"
+    executable = _venv_entrypoint(Path(env_root), "vllm")
     if not executable.is_file():
         raise HTTPException(400, f"vLLM 실행 파일이 없습니다: {executable}")
     model = str(configured["vllm_model"])
-    if model.startswith("/") and not Path(model).is_dir():
+    if _looks_like_local_path(model) and not Path(model).is_dir():
         raise HTTPException(400, f"모델 폴더가 없습니다: {model}")
     speculative = (
         {"method": "dflash", "model": configured["dflash_model"], "num_speculative_tokens": 7}

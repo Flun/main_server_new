@@ -74,7 +74,7 @@
                     <span v-if="hw.lhm_available" class="ml-2 pl-2 border-l border-zinc-700 text-indigo-400">LHM Synced</span>
                     <span class="ml-2 pl-2 border-l border-zinc-700 inline-flex items-center gap-1.5" :class="monitorPower.state === 'on' ? 'text-emerald-400' : monitorPower.state === 'off' ? 'text-zinc-400' : 'text-amber-400'">
                         <span class="w-2 h-2 rounded-full" :class="monitorPower.state === 'on' ? 'bg-emerald-400' : monitorPower.state === 'off' ? 'bg-zinc-600' : 'bg-amber-400'"></span>
-                        물리 모니터: {{ monitorPower.state === 'on' ? '켜짐' : monitorPower.state === 'off' ? '꺼짐' : '확인 중' }}<span v-if="monitorPower.count"> ({{ monitorPower.count }}대)</span>
+                        물리 모니터: {{ !monitorPower.available ? '지원 안 함' : monitorPower.state === 'on' ? '켜짐' : monitorPower.state === 'off' ? '꺼짐' : '확인 중' }}<span v-if="monitorPower.count"> ({{ monitorPower.count }}대)</span>
                     </span>
                 </div>
             </div>
@@ -92,11 +92,11 @@
                     <span v-else-if="desktop.mode === 'cli'">GUI 모드 전환</span>
                     <span v-else>데스크톱 모드</span>
                 </button>
-                <button @click="setMonitorPower('off')" :disabled="monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-sky-500/10 border border-sky-500/25 text-sky-300 hover:bg-sky-500/20" title="현재 상태와 관계없이 DDC/CI 끄기 명령을 강제로 전송">
+                <button @click="setMonitorPower('off')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-sky-500/10 border border-sky-500/25 text-sky-300 hover:bg-sky-500/20" title="현재 상태와 관계없이 DDC/CI 끄기 명령을 강제로 전송">
                     <span v-if="monitorPower.switching === 'off'">끄는 중...</span>
                     <span v-else>물리 모니터 강제 끄기</span>
                 </button>
-                <button @click="setMonitorPower('on')" :disabled="monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
+                <button @click="setMonitorPower('on')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
                     <span v-if="monitorPower.switching === 'on'">켜는 중...</span>
                     <span v-else>물리 모니터 강제 켜기</span>
                 </button>
@@ -196,7 +196,8 @@
                     <p class="mt-1 text-xs text-zinc-500">물리 GPU별 실제 VRAM 점유와 서비스 할당. 선택 변경은 다음 실행부터 적용됩니다.</p>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span class="rounded border px-2 py-1" :class="managerService.enabled ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-rose-500/20 bg-rose-500/10 text-rose-400'">Manager systemd {{ managerService.enabled ? '등록됨' : '미등록' }}</span>
+                    <span class="rounded border px-2 py-1" :class="managerService.enabled ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-rose-500/20 bg-rose-500/10 text-rose-400'">Manager {{ managerService.label || 'systemd' }} {{ managerService.enabled ? '등록됨' : '미등록' }}</span>
+                    <button v-if="isWindows && !managerService.enabled" @click="registerManagerService" class="rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-[11px] text-indigo-300 hover:bg-indigo-500/20 transition">자동 시작 등록</button>
                     <label class="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-950/50 px-2 py-1 text-zinc-300">
                         <input type="checkbox" v-model="autoStart.autostart" @change="saveAutoStart"> 관리자 시작 시 서비스 자동 실행
                     </label>
@@ -244,7 +245,7 @@
             <div v-if="gpuTuning.available" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
                     <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 코어 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. 카드별로 적용을 끌 수 있습니다.</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
-                    <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">systemd 적용</span>
+                    <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">{{ gpuTuning.service === 'manager-autostart' ? '매니저 시작 시 적용' : 'systemd 적용' }}</span>
                 </div>
                 <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
                     <div><div class="flex flex-wrap items-center gap-2"><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.profile === 'cmp_170hx' ? 'CMP 170HX' : gpu.name }}</div><span class="rounded border px-1.5 py-0.5 text-[9px]" :class="gpu.configured?.enabled === false ? 'border-zinc-700 text-zinc-500' : gpu.configured?.enabled ? 'border-indigo-500/30 text-indigo-300' : 'border-zinc-800 text-zinc-600'">{{ gpu.configured?.enabled === false ? '적용 꺼짐' : gpu.configured?.enabled ? '부팅 적용' : '미설정' }}</span></div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · Core {{ gpu.clock_current ?? '--' }}MHz · Memory {{ gpu.memory_clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
@@ -1225,6 +1226,15 @@
                     } catch (e) { alert('자동 실행 설정 저장 실패: '+e.message); }
                 },
 
+                async registerManagerService() {
+                    if (!confirm('로그온 시 manager를 자동으로 시작하는 Task Scheduler 태스크(MainServer)를 등록할까요?\n\n중단 시 5초 후 자동 재시작도 함께 적용됩니다.')) return;
+                    try {
+                        const res = await fetch('/api/manager-service/register', { method: 'POST' });
+                        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || await res.text());
+                        this.managerService = { ...this.managerService, enabled: true };
+                    } catch (e) { alert('자동 시작 등록 실패: '+e.message); }
+                },
+
                 // 모던한 컬러 팔레트 적용 (Zinc, Emerald, Amber, Rose)
                 getColor(temp) {
                     if (temp === null || temp === undefined) return 'text-zinc-600';
@@ -1363,6 +1373,7 @@
                             watcher: !!(svc.watcher && svc.watcher.running)
                         };
                         const runtimeSettings = d.settings || {};
+                        this.isWindows = !!d.is_windows;
                         this.servicePorts = {
                             ...this.servicePorts,
                             comfyui: Number(runtimeSettings.comfyui_port) || this.servicePorts.comfyui,
@@ -1664,7 +1675,7 @@
                         };
                         this.selectedAsset = null;
                         this.showUpdateModal = true;
-                        if (!this.isWindows) this.startBuildPolling();
+                        this.startBuildPolling();
                     } catch (e) { alert("Failed to fetch GitHub releases."); }
                     this.isFetchingReleases = false;
                 },
@@ -1772,12 +1783,9 @@
                     if (!this.selectedAsset) return;
                     this.isUpdating = true;
                     try {
-                        await fetch('/api/llama/models/download', {
-                            method: 'POST', headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ url: this.selectedAsset.download_url, name: this.selectedAsset.name })
-                        });
-                        this.showUpdateModal = false;
-                        await this.fetchScanData();
+                        const res = await fetch('/api/llama/install?tag=' + encodeURIComponent(this.releaseInfo.tag_name) + '&asset=' + encodeURIComponent(this.selectedAsset.name), { method: 'POST' });
+                        if (!res.ok) throw new Error(await res.text());
+                        this.startBuildPolling();
                     } catch (e) { alert("Update processing failed."); }
                     this.isUpdating = false;
                 },
