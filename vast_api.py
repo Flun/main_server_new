@@ -28,6 +28,7 @@ from pydantic import BaseModel, Field
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 BASE_DIR = Path(__file__).resolve().parent
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 SETTINGS_FILE = BASE_DIR / "vast_settings.json"
 ENV_FILE = BASE_DIR / "vast_qwen.env"
 PROXY_SCRIPT = BASE_DIR / "vast_qwen_proxy.py"
@@ -297,7 +298,7 @@ def remote_status(remote: JupyterClient) -> dict[str, Any]:
     script = r'''
 import csv, io, json, os, re, shutil, subprocess
 def run(args):
-    try: return subprocess.run(args, capture_output=True, text=True, timeout=10).stdout.strip()
+    try: return subprocess.run(args, capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW).stdout.strip()
     except Exception: return ""
 gpu_raw = run(["nvidia-smi", "--query-gpu=index,name,temperature.gpu,utilization.gpu,memory.used,memory.total,memory.free,power.draw,power.limit,driver_version", "--format=csv,noheader,nounits"])
 gpu = []
@@ -336,23 +337,6 @@ print("__VAST_JSON__" + json.dumps({"gpus": gpu, "processes": processes, "ram": 
     data = json.loads(payload)
     data["jupyter_access_url"] = jupyter_access_url(load_settings().connection.jupyter_url)
     return data
-
-
-def _legacy_render_script(args: list[str], *, cwd: str | None = None, cuda: bool = False) -> str:
-    lines = ["#!/usr/bin/env bash", "set -Eeuo pipefail", "umask 077", "ulimit -n 65535 2>/dev/null || true"]
-    if cwd:
-        lines.append(f"cd {shell(cwd)}")
-    if cuda:
-        lines += [
-            "export CUDA_HOME=/usr/local/cuda-13.0",
-            'export PATH="$CUDA_HOME/bin:$PATH"',
-            'export LD_LIBRARY_PATH="$CUDA_HOME/lib64:$CUDA_HOME/targets/x86_64-linux/lib:${LD_LIBRARY_PATH:-}"',
-            "export CUDA_DEVICE_ORDER=PCI_BUS_ID",
-            "export MALLOC_ARENA_MAX=2",
-        ]
-    rendered = " \\\n  ".join(shell(arg) if not arg.startswith("__API_KEY__") else '"$(tr -d \'\\r\\n\' < /workspace/llama/api_key.txt)"' for arg in args)
-    lines.append("exec " + rendered)
-    return "\n".join(lines) + "\n"
 
 
 def render_script(args: list[str], *, cwd: str | None = None, cuda: bool = False) -> str:

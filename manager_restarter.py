@@ -51,6 +51,7 @@ def main():
         creationflags=(
             getattr(subprocess, "DETACHED_PROCESS", 0)
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         ),
     )
     print(f"[manager_restarter] {time.strftime('%Y-%m-%d %H:%M:%S')} manager 재기동 요청 완료")

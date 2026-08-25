@@ -72,7 +72,7 @@
                     <span class="w-2 h-2 rounded-full bg-emerald-500/80"></span>
                     <span>System Online</span>
                     <span v-if="hw.lhm_available" class="ml-2 pl-2 border-l border-zinc-700 text-indigo-400">LHM Synced</span>
-                    <span class="ml-2 pl-2 border-l border-zinc-700 inline-flex items-center gap-1.5" :class="monitorPower.state === 'on' ? 'text-emerald-400' : monitorPower.state === 'off' ? 'text-zinc-400' : 'text-amber-400'">
+                    <span v-if="!isWindows" class="ml-2 pl-2 border-l border-zinc-700 inline-flex items-center gap-1.5" :class="monitorPower.state === 'on' ? 'text-emerald-400' : monitorPower.state === 'off' ? 'text-zinc-400' : 'text-amber-400'">
                         <span class="w-2 h-2 rounded-full" :class="monitorPower.state === 'on' ? 'bg-emerald-400' : monitorPower.state === 'off' ? 'bg-zinc-600' : 'bg-amber-400'"></span>
                         물리 모니터: {{ !monitorPower.available ? '지원 안 함' : monitorPower.state === 'on' ? '켜짐' : monitorPower.state === 'off' ? '꺼짐' : '확인 중' }}<span v-if="monitorPower.count"> ({{ monitorPower.count }}대)</span>
                     </span>
@@ -84,7 +84,7 @@
                 <a href="/dataset" class="px-3 py-2 text-sm font-medium border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition shadow-sm">Dataset</a>
                 <a href="/vast" class="px-3 py-2 text-sm font-medium border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 rounded-lg transition shadow-sm">Vast Remote</a>
                 <a href="/infrastructure" class="px-3 py-2 text-sm font-medium border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 rounded-lg transition shadow-sm">통합 환경</a>
-                <button @click="toggleDesktopMode" :disabled="!desktop.available || desktop.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-40" :class="desktop.mode === 'gui' ? 'bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20' : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20'" :title="desktop.switching ? '전환 중...' : 'GUI/CLI 전환 (원격에서도 가능)'">
+                <button v-if="!isWindows" @click="toggleDesktopMode" :disabled="!desktop.available || desktop.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-40" :class="desktop.mode === 'gui' ? 'bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20' : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20'" :title="desktop.switching ? '전환 중...' : 'GUI/CLI 전환 (원격에서도 가능)'">
                     <svg v-if="!desktop.switching" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
                     <svg v-else class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
                     <span v-if="desktop.switching">전환 중...</span>
@@ -92,15 +92,15 @@
                     <span v-else-if="desktop.mode === 'cli'">GUI 모드 전환</span>
                     <span v-else>데스크톱 모드</span>
                 </button>
-                <button @click="setMonitorPower('off')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-sky-500/10 border border-sky-500/25 text-sky-300 hover:bg-sky-500/20" title="현재 상태와 관계없이 DDC/CI 끄기 명령을 강제로 전송">
+                <button v-if="!isWindows" @click="setMonitorPower('off')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-sky-500/10 border border-sky-500/25 text-sky-300 hover:bg-sky-500/20" title="현재 상태와 관계없이 DDC/CI 끄기 명령을 강제로 전송">
                     <span v-if="monitorPower.switching === 'off'">끄는 중...</span>
                     <span v-else>물리 모니터 강제 끄기</span>
                 </button>
-                <button @click="setMonitorPower('on')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
+                <button v-if="!isWindows" @click="setMonitorPower('on')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
                     <span v-if="monitorPower.switching === 'on'">켜는 중...</span>
                     <span v-else>물리 모니터 강제 켜기</span>
                 </button>
-                <button @click="toggleSunshineMonitorOff" :disabled="sunshineMonitorOff.saving" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40" :class="sunshineMonitorOff.enabled ? 'bg-violet-500/15 border border-violet-500/30 text-violet-300 hover:bg-violet-500/25' : 'bg-zinc-800 border border-zinc-700 text-zinc-400 hover:bg-zinc-700'" title="Moonlight Desktop 스트림이 시작되면 물리 모니터를 자동으로 끔">
+                <button v-if="!isWindows" @click="toggleSunshineMonitorOff" :disabled="sunshineMonitorOff.saving" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40" :class="sunshineMonitorOff.enabled ? 'bg-violet-500/15 border border-violet-500/30 text-violet-300 hover:bg-violet-500/25' : 'bg-zinc-800 border border-zinc-700 text-zinc-400 hover:bg-zinc-700'" title="Moonlight Desktop 스트림이 시작되면 물리 모니터를 자동으로 끔">
                     <span v-if="sunshineMonitorOff.saving">저장 중...</span>
                     <span v-else>Moonlight 자동 화면끄기 {{ sunshineMonitorOff.enabled ? 'ON' : 'OFF' }}</span>
                 </button>
@@ -114,114 +114,64 @@
             </div>
         </header>
 
-        <!-- Hardware Resources (Modern Dashboard Style) -->
-        <section class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 shadow-sm">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xs font-semibold text-zinc-500 tracking-wider uppercase">Hardware Utilization</h2>
-                <button @click="openHwHistoryModal" class="text-xs px-3 py-1.5 bg-zinc-800 hover:bg-zinc-700 border border-zinc-700 rounded-lg text-zinc-400 hover:text-zinc-200 transition flex items-center gap-1.5">
-                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
-                    History
-                </button>
-            </div>
-            
-            <div class="grid grid-cols-2 lg:grid-cols-4 gap-6 mb-6">
-                <!-- CPU -->
-                <div>
-                    <div class="flex justify-between items-end mb-2">
-                        <span class="text-sm font-medium text-zinc-400">CPU</span>
-                        <span class="text-lg font-semibold text-zinc-100">{{ hw.cpu.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
-                    </div>
-                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-indigo-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.cpu + '%'}"></div></div>
-                </div>
-                <!-- RAM -->
-                <div>
-                    <div class="flex justify-between items-end mb-2">
-                        <span class="text-sm font-medium text-zinc-400">Memory</span>
-                        <span class="text-lg font-semibold text-zinc-100">{{ hw.ram.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
-                    </div>
-                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-emerald-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.ram + '%'}"></div></div>
-                </div>
-                <!-- GPU -->
-                <div>
-                    <div class="flex justify-between items-end mb-2">
-                        <span class="text-sm font-medium text-zinc-400">GPU Core</span>
-                        <span class="text-lg font-semibold text-zinc-100">{{ hw.gpu.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
-                    </div>
-                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-sky-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.gpu + '%'}"></div></div>
-                </div>
-                <!-- VRAM -->
-                <div>
-                    <div class="flex justify-between items-end mb-2">
-                        <span class="text-sm font-medium text-zinc-400">VRAM <span class="text-xs text-zinc-600 ml-1">({{ hw.vram_used }} / {{ hw.vram_total }} GB)</span></span>
-                        <span class="text-lg font-semibold text-zinc-100">{{ hw.vram.toFixed(1) }}<span class="text-sm text-zinc-500 font-normal">%</span></span>
-                    </div>
-                    <div class="w-full bg-zinc-800 rounded-full h-1.5"><div class="bg-amber-500 h-1.5 rounded-full transition-all duration-500" :style="{width: hw.vram + '%'}"></div></div>
-                </div>
-            </div>
-
-            <!-- Sensors -->
-            <div class="grid grid-cols-2 md:grid-cols-6 gap-px bg-zinc-800 rounded-lg overflow-hidden border border-zinc-800">
-                <div class="bg-zinc-900 p-3">
-                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">CPU Temp</div>
-                    <div class="text-base font-semibold" :class="getColor(hw.cpu_temp)">{{ hw.cpu_temp !== null ? hw.cpu_temp + '°C' : '--' }}</div>
-                </div>
-                <div class="bg-zinc-900 p-3">
-                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">CPU Power</div>
-                    <div class="text-base font-semibold text-zinc-300">{{ hw.cpu_power !== null ? hw.cpu_power + ' W' : '--' }}</div>
-                </div>
-                <div class="bg-zinc-900 p-3">
-                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">CPU Fan</div>
-                    <div class="text-base font-semibold text-zinc-300">{{ hw.cpu_fan !== null ? hw.cpu_fan + ' RPM' : '--' }}</div>
-                </div>
-                <div class="bg-zinc-900 p-3">
-                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">GPU Temp</div>
-                    <div class="text-base font-semibold" :class="getColor(hw.gpu_temp)">{{ hw.gpu_temp !== null ? hw.gpu_temp + '°C' : '--' }}</div>
-                </div>
-                <div class="bg-zinc-900 p-3">
-                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">GPU Power</div>
-                    <div class="text-base font-semibold text-zinc-300">{{ hw.gpu_power !== null ? hw.gpu_power + ' W' : '--' }}</div>
-                </div>
-                <div class="bg-zinc-900 p-3">
-                    <div class="text-[11px] text-zinc-500 font-medium mb-1 uppercase">GPU Hotspot</div>
-                    <div class="text-base font-semibold" :class="getColor(hw.gpu_hotspot)">{{ hw.gpu_hotspot !== null ? hw.gpu_hotspot + '°C' : '--' }}</div>
-                </div>
-            </div>
-        </section>
-
-        <!-- GPU assignment / offload map -->
+        <!-- Unified hardware utilization / GPU assignment / offload map -->
         <section class="bg-zinc-900 border border-zinc-800 rounded-xl p-5 shadow-sm">
             <div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                    <h2 class="text-xs font-semibold text-zinc-500 tracking-wider uppercase">GPU / Offload Map</h2>
-                    <p class="mt-1 text-xs text-zinc-500">물리 GPU별 실제 VRAM 점유와 서비스 할당. 선택 변경은 다음 실행부터 적용됩니다.</p>
+                    <h2 class="text-xs font-semibold text-zinc-500 tracking-wider uppercase">Hardware / GPU Offload</h2>
+                    <p class="mt-1 text-xs text-zinc-500">시스템 사용량과 GPU 0/1별 실시간 상태, 프로세스 및 서비스 오프로딩을 한곳에서 확인합니다.</p>
                 </div>
                 <div class="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span class="rounded border px-2 py-1" :class="managerService.enabled ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-rose-500/20 bg-rose-500/10 text-rose-400'">Manager {{ managerService.label || 'systemd' }} {{ managerService.enabled ? '등록됨' : '미등록' }}</span>
-                    <button v-if="isWindows && !managerService.enabled" @click="registerManagerService" class="rounded border border-indigo-500/30 bg-indigo-500/10 px-2 py-1 text-[11px] text-indigo-300 hover:bg-indigo-500/20 transition">자동 시작 등록</button>
-                    <label class="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-950/50 px-2 py-1 text-zinc-300">
-                        <input type="checkbox" v-model="autoStart.autostart" @change="saveAutoStart"> 관리자 시작 시 서비스 자동 실행
+                    <button @click="openHwHistoryModal" class="flex items-center gap-1.5 rounded border border-zinc-700 bg-zinc-800 px-2 py-1 text-zinc-400 transition hover:bg-zinc-700 hover:text-zinc-200">
+                        <svg class="h-3.5 w-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path></svg>
+                        History
+                    </button>
+                    <span class="rounded border px-2 py-1" :class="managerService.enabled ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-400' : 'border-zinc-700/50 bg-zinc-800/30 text-zinc-500'">{{ managerService.enabled ? '✓ 부팅 자동 시작 활성' : '부팅 자동 시작 비활성' }}</span>
+                    <label class="flex items-center gap-1.5 rounded border border-indigo-600/40 bg-indigo-950/30 px-2 py-1 text-indigo-200 cursor-pointer">
+                        <input type="checkbox" v-model="autoStart.autostart" @change="saveAutoStart"> 부팅 시 자동 시작
                     </label>
                     <label v-for="item in autoStartDefs" :key="item.key" class="flex items-center gap-1.5 rounded border border-zinc-800 px-2 py-1 text-zinc-400" :class="!autoStart.autostart && 'opacity-40'">
                         <input type="checkbox" v-model="autoStart[item.key]" @change="saveAutoStart" :disabled="!autoStart.autostart"> {{ item.label }}
                     </label>
                 </div>
             </div>
+            <div class="mt-4 grid gap-3 md:grid-cols-2">
+                <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                    <div class="flex items-end justify-between"><span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">CPU</span><span class="font-mono text-lg font-semibold text-zinc-100">{{ hw.cpu.toFixed(1) }}%</span></div>
+                    <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full bg-indigo-500 transition-all duration-500" :style="{width: hw.cpu + '%'}"></div></div>
+                </div>
+                <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
+                    <div class="flex items-end justify-between"><span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">System Memory <span class="ml-1 font-normal normal-case text-zinc-600">{{ hw.ram_used }} / {{ hw.ram_total }} GB</span></span><span class="font-mono text-lg font-semibold text-zinc-100">{{ hw.ram.toFixed(1) }}%</span></div>
+                    <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full bg-emerald-500 transition-all duration-500" :style="{width: hw.ram + '%'}"></div></div>
+                </div>
+            </div>
             <div v-if="!gpuTopology.available" class="mt-4 rounded-lg border border-dashed border-zinc-700 px-4 py-5 text-center text-xs text-zinc-500">NVIDIA GPU 정보를 기다리는 중입니다.</div>
-            <div v-else class="mt-3 grid grid-cols-1 gap-2 lg:grid-cols-2">
-                <div v-for="gpu in gpuTopology.gpus" :key="gpu.uuid" class="rounded-lg border bg-zinc-950/50 p-3" :class="gpu.temp_memory > gpuThermalEvents.threshold_c ? 'border-rose-500/70' : 'border-zinc-800'">
+            <div v-else class="mt-4 grid grid-cols-1 gap-3 xl:grid-cols-2">
+                <div v-for="gpu in gpuTopology.gpus" :key="gpu.uuid" class="rounded-xl border bg-zinc-950/60 p-4 shadow-inner" :class="gpu.temp_memory > gpuThermalEvents.threshold_c ? 'border-rose-500/70' : gpu.index === 0 ? 'border-sky-500/30' : 'border-violet-500/30'">
                     <div class="flex min-w-0 items-center justify-between gap-3">
-                        <div class="flex min-w-0 items-center gap-2"><span class="shrink-0 rounded bg-sky-500/10 px-1.5 py-0.5 font-mono text-[10px] text-sky-300">GPU {{ gpu.index }}</span><span class="truncate text-xs font-semibold">{{ gpu.name }}</span></div>
+                        <div class="flex min-w-0 items-center gap-2"><span class="shrink-0 rounded-md px-2 py-1 font-mono text-sm font-bold" :class="gpu.index === 0 ? 'bg-sky-500/15 text-sky-300' : 'bg-violet-500/15 text-violet-300'">GPU {{ gpu.index }}</span><span class="truncate text-sm font-semibold">{{ gpu.name }}</span></div>
                         <div class="flex shrink-0 items-center gap-2 text-[10px]"><span v-if="thermalEventCount(gpu.uuid)" class="text-amber-400">HBM 경고 {{ thermalEventCount(gpu.uuid) }}회</span><button @click="toggleGpuDetails(gpu.uuid)" class="rounded border border-zinc-800 px-1.5 py-0.5 text-zinc-500 hover:text-zinc-300">{{ expandedGpus[gpu.uuid] ? '접기' : '상세' }}</button></div>
                     </div>
-                    <div class="mt-2 grid grid-cols-3 gap-px overflow-hidden rounded bg-zinc-800 sm:grid-cols-6">
-                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">GPU</div><div class="font-mono text-[11px] text-zinc-300">{{ gpu.util ?? '--' }}%</div></div>
-                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">VRAM</div><div class="whitespace-nowrap font-mono text-[11px] text-zinc-300">{{ (gpu.vram_used / 1024).toFixed(1) }}/{{ (gpu.vram_total / 1024).toFixed(0) }}G</div></div>
-                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">CORE °C</div><div class="font-mono text-[11px]" :class="getColor(gpu.temp)">{{ gpu.temp ?? '--' }}</div></div>
-                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">HBM °C</div><div class="font-mono text-[11px]" :class="gpu.temp_memory > 85 ? 'text-rose-400' : gpu.temp_memory !== null && gpu.temp_memory !== undefined ? 'text-emerald-400' : 'text-zinc-600'">{{ gpu.temp_memory ?? '--' }}</div></div>
-                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">POWER</div><div class="whitespace-nowrap font-mono text-[11px] text-zinc-300">{{ gpu.power != null ? gpu.power.toFixed(0) : '--' }}/{{ gpu.power_max != null ? gpu.power_max.toFixed(0) : '--' }}W</div></div>
-                        <div class="bg-zinc-900 px-2 py-1.5"><div class="text-[9px] text-zinc-600">CORE / MEM</div><div class="whitespace-nowrap font-mono text-[11px] text-zinc-300">{{ gpu.clock_graphics ?? '--' }}/{{ gpu.clock_memory ?? '--' }}</div></div>
+                    <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                        <div class="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3">
+                            <div class="flex items-end justify-between"><span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">Core Load</span><span class="font-mono text-xl font-semibold text-zinc-100">{{ gpu.util ?? 0 }}%</span></div>
+                            <div class="mt-2 h-2 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full transition-all duration-500" :class="gpu.index === 0 ? 'bg-sky-500' : 'bg-violet-500'" :style="{width: (gpu.util ?? 0) + '%'}"></div></div>
+                        </div>
+                        <div class="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3">
+                            <div class="flex items-end justify-between gap-2"><span class="text-[10px] font-semibold uppercase tracking-wider text-zinc-500">VRAM <span class="ml-1 font-normal normal-case text-zinc-600">{{ ((gpu.vram_used ?? 0) / 1024).toFixed(1) }} / {{ ((gpu.vram_total ?? 0) / 1024).toFixed(1) }} GB</span></span><span class="font-mono text-xl font-semibold text-zinc-100">{{ (gpu.mem_util ?? 0).toFixed(1) }}%</span></div>
+                            <div class="mt-2 h-2 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full transition-all duration-500" :class="gpu.mem_util > 90 ? 'bg-rose-500' : gpu.mem_util > 70 ? 'bg-amber-500' : 'bg-emerald-500'" :style="{width: gpu.mem_util + '%'}"></div></div>
+                            <div class="mt-1 text-right font-mono text-[9px] text-zinc-600">FREE {{ ((gpu.vram_free ?? 0) / 1024).toFixed(1) }} GB</div>
+                        </div>
                     </div>
-                    <div class="mt-1.5 flex items-center gap-2 text-[9px] text-zinc-600"><div class="h-1 flex-1 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full" :class="gpu.mem_util > 90 ? 'bg-rose-500' : gpu.mem_util > 70 ? 'bg-amber-500' : 'bg-sky-500'" :style="{width: gpu.mem_util + '%'}"></div></div><span>MEM CTRL {{ gpu.memory_controller_util ?? '--' }}%</span></div>
+                    <div class="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-zinc-800 sm:grid-cols-6">
+                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">CORE TEMP</div><div class="mt-0.5 font-mono text-xs" :class="getColor(gpu.temp)">{{ gpu.temp != null ? gpu.temp + '°C' : '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">MEMORY TEMP</div><div class="mt-0.5 font-mono text-xs" :class="gpu.temp_memory > 85 ? 'text-rose-400' : gpu.temp_memory != null ? 'text-emerald-400' : 'text-zinc-600'">{{ gpu.temp_memory != null ? gpu.temp_memory + '°C' : '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">POWER</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.power != null ? gpu.power.toFixed(0) : '--' }} / {{ gpu.power_max != null ? gpu.power_max.toFixed(0) : '--' }} W</div></div>
+                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">FAN / MEM CTRL</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.fan_speed != null ? gpu.fan_speed + '%' : '--' }} / {{ gpu.memory_controller_util != null ? gpu.memory_controller_util + '%' : '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">CORE / MEM CLOCK</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.clock_graphics ?? '--' }} / {{ gpu.clock_memory ?? '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">PCIE LINK</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.pcie_gen_current != null && gpu.pcie_width_current != null ? `Gen ${gpu.pcie_gen_current} ×${gpu.pcie_width_current}` : '--' }}</div><div v-if="gpu.pcie_gen_max != null && gpu.pcie_width_max != null" class="mt-0.5 whitespace-nowrap font-mono text-[8px] text-zinc-600">max Gen {{ gpu.pcie_gen_max }} ×{{ gpu.pcie_width_max }}</div></div>
+                    </div>
+                    <div class="mt-3 flex flex-wrap items-center gap-1.5"><span class="mr-1 text-[9px] font-semibold uppercase tracking-wider text-zinc-600">Active workloads</span><span v-for="process in visibleGpuProcesses(gpu)" :key="'chip-'+process.service+'-'+(process.pid ?? 'system')" class="rounded border border-zinc-700 bg-zinc-800/70 px-2 py-1 text-[10px] text-zinc-300">{{ gpuProcessLabel(process) }}<span class="ml-1 font-mono text-amber-300">{{ process.vram_used_gb === null ? '' : process.vram_used_gb + ' GB' }}</span></span><span v-if="!visibleGpuProcesses(gpu).length" class="text-[10px] text-zinc-600">식별된 서비스 없음</span></div>
                     <div v-if="expandedGpus[gpu.uuid]" class="mt-2 border-t border-zinc-800 pt-2">
                         <div class="truncate font-mono text-[9px] text-zinc-600">{{ gpu.pci_bus_id }} · {{ gpu.uuid }}</div>
                         <div class="mt-2 space-y-1">
@@ -235,24 +185,165 @@
                     </div>
                 </div>
             </div>
-            <div v-if="gpuTopology.available" class="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2">
+            <div v-if="gpuTopology.available" class="mt-3 grid grid-cols-1 gap-3 lg:grid-cols-3">
                 <div v-for="key in ['comfyui','llama','vllm']" :key="key" class="rounded-lg border border-zinc-800 bg-zinc-950/30 p-3 text-xs">
-                    <div class="flex justify-between"><span class="font-semibold">{{ gpuTopology.services[key]?.label }}</span><span class="font-mono text-amber-300">{{ gpuTopology.services[key]?.vram_used_gb || 0 }} GB</span></div>
-                    <div class="mt-2 text-[11px] text-zinc-500">지정: {{ (gpuTopology.services[key]?.configured_devices || []).join(', ') || '모든 GPU' }} · 실사용: {{ (gpuTopology.services[key]?.active_gpu_indexes || []).map(i => 'GPU '+i).join(', ') || '없음' }}</div>
-                    <div v-if="key === 'llama' && gpuTopology.services[key]?.offload" class="mt-1 text-[11px] text-zinc-500">오프로딩 {{ gpuTopology.services[key].offload.layers_offloaded ?? '?' }}/{{ gpuTopology.services[key].offload.layers_total ?? '?' }} layers · GPU buffer {{ gpuTopology.services[key].offload.gpu_model_buffer_gb ?? '?' }} GB · RAM buffer {{ gpuTopology.services[key].offload.cpu_model_buffer_gb ?? '?' }} GB</div>
+                    <div class="flex justify-between"><span class="font-semibold">{{ gpuTopology.services[key]?.label }}</span><span class="font-mono text-amber-300">{{ serviceVramLabel(key) }}</span></div>
+                    <div class="mt-2 text-[11px] text-zinc-500">지정: {{ configuredGpuLabel(gpuTopology.services[key]) }} · 실사용: {{ (gpuTopology.services[key]?.active_gpu_indexes || []).map(i => 'GPU '+i).join(', ') || '없음' }}</div>
+                    <div v-if="key === 'llama' && hasOffloadData(gpuTopology.services[key]?.offload)" class="mt-1 text-[11px] text-zinc-500">오프로딩 {{ gpuTopology.services[key].offload.layers_offloaded ?? '?' }}/{{ gpuTopology.services[key].offload.layers_total ?? '?' }} layers · GPU buffer {{ gpuTopology.services[key].offload.gpu_model_buffer_gb ?? '?' }} GB · RAM buffer {{ gpuTopology.services[key].offload.cpu_model_buffer_gb ?? '?' }} GB</div>
                 </div>
+            </div>
+            <div v-if="isWindows" class="mt-4 rounded-lg border bg-zinc-950/40 p-4" :class="cmp170Unlock.unlocked ? 'border-emerald-500/30' : 'border-zinc-800'">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <div class="flex flex-wrap items-center gap-2">
+                            <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">CMP 170HX 64GB Unlock</h3>
+                            <span class="rounded border px-2 py-0.5 text-[10px]" :class="cmp170Unlock.unlocked ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : cmp170Unlock.detected ? 'border-amber-500/30 bg-amber-500/10 text-amber-300' : 'border-zinc-700 text-zinc-500'">{{ cmp170Unlock.unlocked ? '64GB 활성' : cmp170Unlock.detected ? '언락 필요' : '장치 미감지' }}</span>
+                            <span v-if="cmp170Unlock.staged_inf" class="rounded border border-sky-500/20 bg-sky-500/10 px-2 py-0.5 font-mono text-[10px] text-sky-300">170_boot {{ cmp170Unlock.staged_inf }}</span>
+                            <span class="rounded border px-2 py-0.5 text-[10px]" :class="cmp170Unlock.autostart ? 'border-indigo-500/30 bg-indigo-500/10 text-indigo-300' : 'border-zinc-700 text-zinc-500'">{{ cmp170Unlock.autostart ? '로그인 자동 적용 켜짐' : '자동 적용 꺼짐' }}</span>
+                        </div>
+                        <p class="mt-1 text-[11px]" :class="cmp170Unlock.running ? 'text-amber-400' : cmp170Unlock.unlocked ? 'text-emerald-400' : 'text-zinc-500'">{{ cmp170Unlock.message }}</p>
+                        <p class="mt-1 text-[10px] text-zinc-600">현재 VRAM {{ cmp170Unlock.memory_mib != null ? (cmp170Unlock.memory_mib / 1024).toFixed(0) + ' GB' : '--' }} · 언락 중 NVIDIA 드라이버가 잠시 전환되므로 GPU 작업이 없는 로그인 직후 실행됩니다.</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <button @click="runCmp170Unlock" :disabled="cmp170Busy || cmp170Unlock.running || !cmp170Unlock.available || cmp170Unlock.unlocked" class="rounded bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-40">{{ cmp170Unlock.running && cmp170Unlock.action === 'run' ? '언락 중...' : cmp170Unlock.unlocked ? '언락 완료' : '지금 언락' }}</button>
+                        <button @click="toggleCmp170Autostart" :disabled="cmp170Busy || cmp170Unlock.running || !cmp170Unlock.available" class="rounded border px-3 py-2 text-xs disabled:opacity-40" :class="cmp170Unlock.autostart ? 'border-rose-500/30 text-rose-300 hover:bg-rose-500/10' : 'border-indigo-500/30 text-indigo-300 hover:bg-indigo-500/10'">{{ cmp170Unlock.autostart ? '자동 적용 해제' : '로그인 자동 적용 등록' }}</button>
+                        <button @click="fetchCmp170Unlock" :disabled="cmp170Busy" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">새로고침</button>
+                    </div>
+                </div>
+                <details v-if="cmp170Unlock.last_log?.length" class="mt-3 rounded border border-zinc-800 bg-zinc-950/60 p-3">
+                    <summary class="cursor-pointer text-[10px] text-zinc-500">최근 언락 로그</summary>
+                    <pre class="mt-2 max-h-44 overflow-auto whitespace-pre-wrap break-all font-mono text-[9px] leading-relaxed text-zinc-500">{{ cmp170Unlock.last_log.join('\n') }}</pre>
+                </details>
             </div>
             <div v-if="gpuTuning.available" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 코어 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. 카드별로 적용을 끌 수 있습니다.</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
-                    <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">{{ gpuTuning.service === 'manager-autostart' ? '매니저 시작 시 적용' : 'systemd 적용' }}</span>
+                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 코어 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. Core max는 고정 클럭이 아니라 부스트 상한이며 idle에서는 자동으로 다운클럭됩니다.</p><p v-if="!autoStart.gpu_tuning_enabled" class="mt-1 text-[11px] text-amber-500">GPU 튜닝이 꺼져 있어 부팅 시 저장된 값이 재적용되지 않습니다 (MSI Afterburner 등 외부 도구 사용 시 권장).</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
+                    <div class="flex items-center gap-3">
+                        <label class="flex cursor-pointer select-none items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-colors" :class="autoStart.gpu_tuning_enabled ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-300' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'"><input type="checkbox" v-model="autoStart.gpu_tuning_enabled" @change="saveAutoStart"> GPU 튜닝 사용</label>
+                        <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">{{ gpuTuning.service === 'manager-autostart' ? '매니저 시작 시 적용' : 'systemd 적용' }}</span>
+                        <span v-if="gpuTuning.persistence" class="rounded border px-2 py-1 text-[10px]" :class="gpuTuning.persistence.status === 'ready' ? 'border-emerald-500/20 text-emerald-400' : gpuTuning.persistence.status === 'retrying' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-700 text-zinc-500'">{{ gpuTuning.persistence.status === 'ready' ? `부팅 재적용 완료 (${gpuTuning.persistence.applied})` : gpuTuning.persistence.status === 'retrying' ? '부팅 재적용 재시도 중' : gpuTuning.persistence.status === 'disabled' ? '재적용 꺼짐' : '재적용 대기' }}</span>
+                    </div>
                 </div>
                 <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
                     <div><div class="flex flex-wrap items-center gap-2"><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.profile === 'cmp_170hx' ? 'CMP 170HX' : gpu.name }}</div><span class="rounded border px-1.5 py-0.5 text-[9px]" :class="gpu.configured?.enabled === false ? 'border-zinc-700 text-zinc-500' : gpu.configured?.enabled ? 'border-indigo-500/30 text-indigo-300' : 'border-zinc-800 text-zinc-600'">{{ gpu.configured?.enabled === false ? '적용 꺼짐' : gpu.configured?.enabled ? '부팅 적용' : '미설정' }}</span></div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · Core {{ gpu.clock_current ?? '--' }}MHz · Memory {{ gpu.memory_clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
-                    <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" class="input-base mt-1 w-full text-right"></label>
-                    <label class="text-[10px] text-zinc-500">Core clock cap (MHz)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" class="input-base mt-1 w-full text-right"></label>
-                    <label class="text-[10px] text-zinc-500">Fan (0=자동, 30–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
-                    <div class="flex flex-wrap gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">권장 기본값</button><button @click="disableGpuTuning(gpu)" :disabled="gpuTuningSaving || gpu.configured?.enabled === false" class="rounded border border-zinc-800 px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 disabled:opacity-40">적용 끄기</button></div>
+                    <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" :disabled="!autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
+                    <label class="text-[10px] text-zinc-500">Core max (idle 자동)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" :disabled="!autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
+                    <label class="text-[10px] text-zinc-500">Fan (0=자동, 20–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported || !autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
+                    <div class="flex flex-wrap gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">권장 기본값</button><button @click="disableGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled || gpu.configured?.enabled === false" class="rounded border border-zinc-800 px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 disabled:opacity-40">적용 끄기</button></div>
+                </div>
+            </div>
+            <div v-if="isWindows" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+                <div class="flex flex-wrap items-start justify-between gap-3">
+                    <div>
+                        <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">메인보드 팬 / GPU HBM 연동</h3>
+                        <p class="mt-1 text-[11px] text-zinc-600">선택한 메인보드 PWM 채널을 GPU 메모리 온도에 따라 제어합니다. 15초 lease가 끊기면 메인보드 기본 모드로 자동 복귀합니다.</p>
+                        <p v-if="motherboardFans.message" class="mt-1 text-[11px]" :class="motherboardFans.conflict ? 'text-amber-400' : 'text-zinc-500'">{{ motherboardFans.message }}</p>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 text-[10px]">
+                        <span class="rounded border px-2 py-1" :class="motherboardFans.runtime?.active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-zinc-700 text-zinc-500'">
+                            <template v-if="motherboardFans.runtime?.control_mode === 'manual'">{{ motherboardFans.runtime?.active ? `수동 ${manualFanName} → ${motherboardFans.runtime.target_percent}%` : '수동 대기' }}</template>
+                            <template v-else><template v-if="motherboardFans.runtime?.profiles?.gpu?.active">GPU HBM {{ motherboardFans.runtime.profiles.gpu.temperature ?? '--' }}°C → {{ motherboardFans.runtime.profiles.gpu.target_percent }}% · {{ motherboardFans.runtime.profiles.gpu.curve_mode === 'step' ? '계단식' : '선형' }}<template v-if="motherboardFans.runtime.profiles.gpu.target_percent !== motherboardFans.runtime.profiles.gpu.calculated_percent"> (계산 {{ motherboardFans.runtime.profiles.gpu.calculated_percent }}% · {{ motherboardFans.runtime.profiles.gpu.hold_reason === 'hysteresis' ? '히스테리시스 대기' : `감속 ${motherboardFans.runtime.profiles.gpu.down_delay_remaining}초` }})</template></template><template v-else>GPU 자동 꺼짐</template></template>
+                        </span>
+                        <span v-if="motherboardFans.runtime?.control_mode !== 'manual' && motherboardFans.runtime?.profiles?.cpu?.active" class="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-sky-300">CPU {{ motherboardFans.runtime.profiles.cpu.temperature ?? '--' }}°C → {{ motherboardFans.runtime.profiles.cpu.target_percent }}%</span>
+                        <span v-if="motherboardFans.pawnio_version" class="rounded border border-zinc-700 px-2 py-1 text-zinc-500">PawnIO {{ motherboardFans.pawnio_version }}</span>
+                    </div>
+                </div>
+                <div class="mt-3 inline-flex rounded-lg border border-zinc-700 bg-zinc-900 p-1">
+                    <button @click="setMotherboardFanMode('auto')" :disabled="motherboardFanSaving" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode !== 'manual' ? 'bg-indigo-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'">자동 운전</button>
+                    <button @click="setMotherboardFanMode('manual')" :disabled="motherboardFanSaving || motherboardFans.conflict" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode === 'manual' ? 'bg-amber-500 text-zinc-950 shadow' : 'text-zinc-400 hover:text-zinc-200'">수동 팬 찾기</button>
+                </div>
+                <div v-if="motherboardFans.runtime?.error" class="mt-3 rounded border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-300">{{ motherboardFans.runtime.error }}</div>
+                <div v-if="motherboardFans.runtime?.control_mode === 'manual'" class="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
+                    <div class="flex flex-wrap items-start justify-between gap-3">
+                        <div><h4 class="text-sm font-semibold text-amber-200">어느 팬이 시끄러운지 직접 찾기</h4><p class="mt-1 text-[11px] text-zinc-400">여기서는 팬 역할이나 GPU를 고를 필요가 없습니다. 아래 팬을 하나씩 선택하고 PWM을 바꿔 소리와 RPM 변화를 비교하세요.</p></div>
+                        <span class="rounded border border-amber-500/30 px-2 py-1 text-[10px] text-amber-300">자동 HBM 제어 일시정지</span>
+                    </div>
+                    <div class="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                        <button v-for="fan in motherboardFans.channels" :key="fan.id" @click="motherboardFanManualChannel=fan.id" class="rounded-lg border p-3 text-left transition" :class="motherboardFanManualChannel === fan.id ? 'border-amber-400 bg-amber-500/10' : 'border-zinc-700 bg-zinc-950/50 hover:border-zinc-500'">
+                            <div class="flex items-center justify-between gap-2"><span class="text-xs font-semibold" :class="motherboardFanManualChannel === fan.id ? 'text-amber-200' : 'text-zinc-300'">{{ fan.name }}</span><span v-if="motherboardFans.runtime?.manual_channel_id === fan.id" class="rounded bg-emerald-500/15 px-1.5 py-0.5 text-[9px] text-emerald-300">제어 중</span></div>
+                            <div class="mt-2 font-mono text-lg" :class="fan.rpm != null ? 'text-zinc-100' : 'text-zinc-600'">{{ fan.rpm != null ? Math.round(fan.rpm) : '--' }} <span class="text-[10px] text-zinc-600">RPM</span></div>
+                        </button>
+                    </div>
+                    <div class="mt-4 flex flex-wrap items-end gap-3">
+                        <label class="min-w-56 flex-1 text-[10px] text-zinc-500">수동 PWM · {{ motherboardFanManualPercent }}%<input type="range" v-model.number="motherboardFanManualPercent" min="20" max="100" step="1" class="mt-3 w-full accent-amber-400"></label>
+                        <input type="number" v-model.number="motherboardFanManualPercent" min="20" max="100" class="input-base w-20 text-right">
+                        <button @click="applyManualMotherboardFan" :disabled="motherboardFanSaving || !motherboardFanManualChannel" class="rounded bg-amber-500 px-4 py-2 text-xs font-semibold text-zinc-950 hover:bg-amber-400 disabled:opacity-40">선택 팬에 적용</button>
+                        <button @click="resetMotherboardFans" :disabled="motherboardFanSaving" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">팬 제어 잠시 해제</button>
+                    </div>
+                    <p class="mt-3 text-[10px] text-amber-300/70">주의: 펌프 채널일 수 있으므로 RPM을 확인하면서 낮추세요. 20%보다 낮은 값은 막아 두었고, 채널 자체의 하한이 더 높으면 하드웨어 하한으로 자동 보정됩니다.</p>
+                </div>
+                <div v-else class="mt-3">
+                  <div class="grid gap-3 lg:grid-cols-2">
+                    <div class="rounded border border-zinc-800 p-3">
+                        <div class="grid gap-3 sm:grid-cols-2">
+                            <label class="text-[10px] text-zinc-500">메인보드 PWM 채널
+                                <select v-model="motherboardFanEdit.channel_id" :disabled="motherboardFans.conflict" class="input-base mt-1 w-full disabled:opacity-40">
+                                    <option value="">선택하세요</option>
+                                    <option v-for="fan in motherboardFans.channels" :key="fan.id" :value="fan.id">{{ fan.name }} · {{ fan.rpm != null ? Math.round(fan.rpm)+' RPM' : 'RPM --' }}</option>
+                                </select>
+                            </label>
+                            <label class="text-[10px] text-zinc-500">사용자 표시 이름<input v-model.trim="motherboardFanEdit.channel_label" placeholder="예: CMP 170HX 외부 팬" class="input-base mt-1 w-full"></label>
+                            <label class="text-[10px] text-zinc-500">팬 역할
+                                <select v-model="motherboardFanEdit.fan_role" class="input-base mt-1 w-full">
+                                    <option value="cmp170hx_hbm">CMP 170HX HBM 팬</option>
+                                    <option value="gpu_hbm">GPU 호환 외부 팬 (HBM)</option>
+                                </select>
+                            </label>
+                            <label class="text-[10px] text-zinc-500">연결 GPU
+                                <select v-model="motherboardFanEdit.gpu_uuid" class="input-base mt-1 w-full">
+                                    <option value="">선택하세요</option>
+                                    <option v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" :value="gpu.uuid">GPU {{ gpu.index }} · {{ gpu.profile === 'cmp_170hx' ? 'CMP 170HX' : gpu.name }}</option>
+                                </select>
+                            </label>
+                        </div>
+                        <p class="mt-3 rounded border border-indigo-500/15 bg-indigo-500/5 px-3 py-2 text-[10px] leading-relaxed text-zinc-500">이 영역은 찾은 팬을 어떤 GPU 온도와 연결할지 저장하는 자동 운전 설정입니다. 팬 소음 테스트는 위의 <span class="text-amber-300">수동 팬 찾기</span>에서 하세요.</p>
+                    </div>
+                    <div class="rounded border border-zinc-800 p-3">
+                        <div class="grid grid-cols-3 gap-2 sm:grid-cols-6">
+                            <div v-for="(point, index) in motherboardFanEdit.curve" :key="index" class="rounded bg-zinc-900 p-2">
+                                <label class="text-[9px] text-zinc-600">HBM °C<input type="number" v-model.number="point.temp" min="20" max="110" class="input-base mt-1 w-full text-right"></label>
+                                <label class="mt-1 block text-[9px] text-zinc-600">PWM %<input type="number" v-model.number="point.percent" min="0" max="100" class="input-base mt-1 w-full text-right"></label>
+                            </div>
+                        </div>
+                        <p class="mt-2 text-[10px] text-zinc-600">선형은 지점 사이의 PWM을 비례 계산합니다. 계단식은 다음 온도 지점에 도달할 때까지 이전 PWM을 유지합니다.</p>
+                        <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                            <label class="text-[9px] text-zinc-600">커브 방식<select v-model="motherboardFanEdit.curve_mode" class="input-base mt-1 w-full"><option value="linear">선형 보간</option><option value="step">계단식</option></select></label>
+                            <label class="text-[9px] text-zinc-600">최소 PWM %<input type="number" v-model.number="motherboardFanEdit.min_percent" min="20" max="100" class="input-base mt-1 w-full text-right"></label>
+                            <label class="text-[9px] text-zinc-600">최대 PWM %<input type="number" v-model.number="motherboardFanEdit.max_percent" min="20" max="100" class="input-base mt-1 w-full text-right"></label>
+                            <label class="text-[9px] text-zinc-600">히스테리시스 °C<input type="number" v-model.number="motherboardFanEdit.hysteresis_c" min="0" max="10" class="input-base mt-1 w-full text-right"></label>
+                            <label class="text-[9px] text-zinc-600">감속 지연 초<input type="number" v-model.number="motherboardFanEdit.down_delay_seconds" min="0" max="600" class="input-base mt-1 w-full text-right"></label>
+                        </div>
+                        <div class="mt-3 flex flex-wrap items-center justify-between gap-2">
+                            <label class="flex cursor-pointer items-center gap-2 text-xs" :class="motherboardFanEdit.enabled ? 'text-emerald-300' : 'text-zinc-500'"><input type="checkbox" v-model="motherboardFanEdit.enabled"> HBM 자동 팬 제어 사용</label>
+                            <button @click="saveMotherboardFanConfig" :disabled="motherboardFanSaving || motherboardFans.conflict" class="rounded bg-indigo-600 px-4 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">{{ motherboardFanSaving ? '저장 중...' : '설정 저장 / 적용' }}</button>
+                        </div>
+                    </div>
+                  </div>
+                  <div class="mt-3 rounded-lg border border-sky-500/20 bg-sky-500/5 p-3">
+                    <div class="flex flex-wrap items-start justify-between gap-2">
+                        <div><h4 class="text-xs font-semibold text-sky-300">CPU Package 온도 연동 팬</h4><p class="mt-1 text-[10px] text-zinc-500">CPU 부하가 낮을 때 팬을 조용히 낮추고, CPU Package 온도가 오르면 설정한 커브대로 올립니다. GPU 팬과 동시에 동작합니다.</p></div>
+                        <span class="rounded border px-2 py-1 text-[10px]" :class="motherboardFans.runtime?.profiles?.cpu?.active ? 'border-emerald-500/30 text-emerald-300' : 'border-zinc-700 text-zinc-500'">{{ motherboardFans.runtime?.profiles?.cpu?.active ? `${motherboardFans.runtime.profiles.cpu.temperature ?? '--'}°C → ${motherboardFans.runtime.profiles.cpu.target_percent}%` : 'CPU 자동 꺼짐' }}</span>
+                    </div>
+                    <div v-if="motherboardFans.runtime?.profiles?.cpu?.error" class="mt-2 rounded border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-[10px] text-rose-300">{{ motherboardFans.runtime.profiles.cpu.error }}</div>
+                    <div class="mt-3 grid gap-3 lg:grid-cols-[280px_1fr]">
+                        <div class="grid content-start gap-3">
+                            <label class="text-[10px] text-zinc-500">CPU 팬 메인보드 채널<select v-model="motherboardCpuFanEdit.channel_id" class="input-base mt-1 w-full"><option value="">선택하세요</option><option v-for="fan in motherboardFans.channels" :key="fan.id" :value="fan.id">{{ fan.name }} · {{ fan.rpm != null ? Math.round(fan.rpm)+' RPM' : 'RPM --' }}</option></select></label>
+                            <label class="text-[10px] text-zinc-500">표시 이름<input v-model.trim="motherboardCpuFanEdit.channel_label" placeholder="예: CPU 쿨러" class="input-base mt-1 w-full"></label>
+                            <p class="rounded border border-sky-500/15 bg-zinc-950/40 px-3 py-2 text-[10px] leading-relaxed text-zinc-500">채널을 모르면 먼저 <span class="text-amber-300">수동 팬 찾기</span>에서 PWM을 바꿔 CPU 쿨러 RPM과 소리가 변하는 채널을 확인하세요.</p>
+                        </div>
+                        <div>
+                            <div class="grid grid-cols-3 gap-2 sm:grid-cols-6"><div v-for="(point,index) in motherboardCpuFanEdit.curve" :key="index" class="rounded bg-zinc-900 p-2"><label class="text-[9px] text-zinc-600">CPU °C<input type="number" v-model.number="point.temp" min="20" max="110" class="input-base mt-1 w-full text-right"></label><label class="mt-1 block text-[9px] text-zinc-600">PWM %<input type="number" v-model.number="point.percent" min="0" max="100" class="input-base mt-1 w-full text-right"></label></div></div>
+                            <div class="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-5">
+                                <label class="text-[9px] text-zinc-600">커브 방식<select v-model="motherboardCpuFanEdit.curve_mode" class="input-base mt-1 w-full"><option value="linear">선형 보간</option><option value="step">계단식</option></select></label>
+                                <label class="text-[9px] text-zinc-600">최소 PWM %<input type="number" v-model.number="motherboardCpuFanEdit.min_percent" min="20" max="100" class="input-base mt-1 w-full text-right"></label>
+                                <label class="text-[9px] text-zinc-600">최대 PWM %<input type="number" v-model.number="motherboardCpuFanEdit.max_percent" min="20" max="100" class="input-base mt-1 w-full text-right"></label>
+                                <label class="text-[9px] text-zinc-600">히스테리시스 °C<input type="number" v-model.number="motherboardCpuFanEdit.hysteresis_c" min="0" max="10" class="input-base mt-1 w-full text-right"></label>
+                                <label class="text-[9px] text-zinc-600">감속 지연 초<input type="number" v-model.number="motherboardCpuFanEdit.down_delay_seconds" min="0" max="600" class="input-base mt-1 w-full text-right"></label>
+                            </div>
+                            <div class="mt-3 flex flex-wrap items-center justify-between gap-2"><label class="flex cursor-pointer items-center gap-2 text-xs" :class="motherboardCpuFanEdit.enabled ? 'text-sky-300' : 'text-zinc-500'"><input type="checkbox" v-model="motherboardCpuFanEdit.enabled"> CPU 자동 팬 제어 사용</label><button @click="saveMotherboardCpuFanConfig" :disabled="motherboardFanSaving || motherboardFans.conflict" class="rounded bg-sky-600 px-4 py-2 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-40">{{ motherboardFanSaving ? '저장 중...' : 'CPU 설정 저장 / 적용' }}</button></div>
+                        </div>
+                    </div>
+                  </div>
                 </div>
             </div>
         </section>
@@ -458,15 +549,6 @@
                                 </div>
                                 <p class="text-[11px] text-zinc-500 mt-1.5">GGUF 및 Jinja 파일을 스캔합니다. 저장 시 llama.cpp 설정에 자동 반영됩니다.</p>
                             </div>
-                            <div class="flex flex-col justify-end">
-                                <label class="flex items-center gap-2.5 cursor-pointer select-none bg-zinc-900/60 border border-sky-800/40 rounded-lg px-3 py-2.5 hover:border-sky-700/60 transition">
-                                    <input type="checkbox" v-model="vramCleanupEnabled" @change="saveVramToggle" class="w-4 h-4 accent-sky-500 cursor-pointer">
-                                    <span class="flex flex-col">
-                                        <span class="text-xs font-medium text-zinc-200">ComfyUI VRAM Cleanup (8080 가드)</span>
-                                        <span class="text-[11px] text-zinc-500">사람이 8080으로 추론하면 ComfyUI 완료 대기·VRAM 정리 후 내부 8082로 전달. ComfyUI 노드는 8082 직접 사용.</span>
-                                    </span>
-                                </label>
-                            </div>
                             <div class="flex flex-col col-span-2">
                                 <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">Physical GPUs (선택 순서 유지)</label>
                                 <div class="flex flex-wrap gap-2">
@@ -490,6 +572,10 @@
                                     <option value="">None</option>
                                     <option v-for="m in scanData.mmproj" :key="'proj_'+m" :value="m">{{ getDirName(m) }}</option>
                                 </select>
+                            </div>
+                            <div class="flex flex-col col-span-2">
+                                <label class="text-xs font-semibold text-zinc-400 mb-1.5 uppercase tracking-wide">API Model Alias (--alias)</label>
+                                <input type="text" v-model="config.alias" class="input-base text-xs" placeholder="비우면 GGUF 전체 경로가 모델 ID로 사용됩니다">
                             </div>
                         </div>
                     </div>
@@ -580,82 +666,64 @@
                                 <label class="text-[11px] font-medium text-zinc-400 mb-1.5">CPU Threads (-t)</label>
                                 <input type="number" v-model="config.threads" class="input-base text-xs" placeholder="Auto">
                             </div>
-                            <div class="flex flex-col">
-                                <label class="text-[11px] font-medium text-indigo-400 mb-1.5" title="Idle 후 모델을 메모리에서 언로드합니다. 1 = 추론 종료 1초 후 언로드">VRAM Auto-Unload (--sleep-idle-seconds)</label>
-                                <input type="number" min="-1" step="1" v-model="config.sleepIdleSeconds" @change="normalizeSleepFit" class="input-base text-xs" placeholder="-1 (Disabled)">
-                                <span class="mt-1 text-[10px] text-zinc-600">-1 비활성 · 30–120 권장 · 1은 요청 직후 거의 즉시 언로드</span>
-                                <span v-if="sleepIdleEnabled" class="mt-1 text-[10px] text-amber-400">llama.cpp 재로딩 충돌 방지를 위해 --fit은 함께 사용하지 않습니다.</span>
-                            </div>
                         </div>
 
                         <!-- Speculative Decoding (MTP) -->
                         <div class="mt-5 pt-4 border-t border-zinc-800">
-                            <div class="text-[11px] font-semibold text-zinc-500 uppercase tracking-widest mb-3">Speculative Decoding / MTP (--spec-type, --spec-draft-*)</div>
+                            <div class="text-[11px] font-semibold text-zinc-500 uppercase tracking-widest mb-1">Speculative Decoding / MTP</div>
+                            <div class="mb-3 text-[10px] text-zinc-600">MTP가 포함된 GGUF는 draft-mtp와 Draft N Max만 지정합니다. 별도 draft GGUF를 쓰는 방식만 Draft Model을 선택하세요.</div>
                             <div class="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-5">
                                 <div class="flex flex-col">
                                     <label class="text-[11px] font-medium text-indigo-400 mb-1.5">Spec Type (--spec-type)</label>
                                     <select v-model="config.specType" class="input-base text-xs">
                                         <option value="">Off</option>
                                         <option value="draft-mtp">draft-mtp</option>
-                                        <option value="draft-simple">draft-simple</option>
-                                        <option value="draft-eagle3">draft-eagle3</option>
                                         <option value="draft-dflash">draft-dflash</option>
                                         <option value="draft-dspark">draft-dspark</option>
-                                        <option value="ngram-simple">ngram-simple</option>
-                                        <option value="ngram-mod">ngram-mod</option>
-                                        <option value="ngram-cache">ngram-cache</option>
+                                        <option value="draft-eagle3">draft-eagle3</option>
+                                        <option value="draft-simple">draft-simple</option>
                                     </select>
                                 </div>
                                 <div class="flex flex-col">
                                     <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft N Max (--spec-draft-n-max)</label>
-                                    <input type="number" v-model="config.specDraftNMax" class="input-base text-xs" placeholder="2">
-                                </div>
-                                <div class="flex flex-col">
-                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft N Min (--spec-draft-n-min)</label>
-                                    <input type="number" v-model="config.specDraftNMin" class="input-base text-xs" placeholder="0">
-                                </div>
-                                <div class="flex flex-col">
-                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft P Split (--spec-draft-p-split)</label>
-                                    <input type="number" step="0.01" v-model="config.specDraftPSplit" class="input-base text-xs" placeholder="0.10">
-                                </div>
-                                <div class="flex flex-col">
-                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft P Min (--spec-draft-p-min)</label>
-                                    <input type="number" step="0.01" v-model="config.specDraftPMin" class="input-base text-xs" placeholder="0.00">
+                                    <input type="number" min="1" max="64" v-model="config.specDraftNMax" :disabled="!config.specType" class="input-base text-xs disabled:opacity-40" placeholder="4">
                                 </div>
                                 <div class="flex flex-col">
                                     <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft NGL (--spec-draft-ngl)</label>
-                                    <input type="text" v-model="config.specDraftNgl" class="input-base text-xs" placeholder="auto / N">
+                                    <input type="text" v-model="config.specDraftNgl" :disabled="!config.specType" class="input-base text-xs disabled:opacity-40" placeholder="비우면 auto">
                                 </div>
                                 <div class="flex flex-col col-span-2 lg:col-span-3">
-                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">Draft Device (--spec-draft-device)</label>
-                                    <input type="text" v-model="config.specDraftDevice" class="input-base text-xs" placeholder="none / cuda / cuda:0">
+                                    <label class="text-[11px] font-medium text-zinc-400 mb-1.5">External Draft Model (--spec-draft-model)</label>
+                                    <select v-model="config.specDraftModel" :disabled="!config.specType || config.specType === 'draft-mtp'" class="input-base text-xs disabled:opacity-40">
+                                        <option value="">None / model-integrated draft</option>
+                                        <option v-for="m in scanData.models" :key="'draft_'+m" :value="m">{{ getDirName(m) }}</option>
+                                    </select>
                                 </div>
                             </div>
                         </div>
 
-                        <!-- Dynamic optional arguments -->
+                        <!-- Practical advanced arguments -->
                         <div class="mt-5 pt-4 border-t border-zinc-800">
-                            <div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
-                                <div><div class="text-[11px] font-semibold text-zinc-500 uppercase tracking-widest">Optional Arguments</div><div class="mt-1 text-[10px] text-zinc-600">사용할 옵션만 추가되며 프리셋과 마지막 실행에 함께 저장됩니다.</div></div>
-                                <div class="flex gap-2">
-                                    <select v-model="optionalArgToAdd" class="input-base text-xs"><option value="">Add an argument...</option><option v-for="item in availableOptionalArgs" :key="item.key" :value="item.key">{{item.label}}</option></select>
-                                    <button type="button" @click="addOptionalArg" :disabled="!optionalArgToAdd" class="rounded border border-indigo-500/30 bg-indigo-500/10 px-3 py-2 text-xs text-indigo-300 disabled:opacity-30">Add</button>
-                                </div>
-                            </div>
-                            <div v-if="activeOptionalArgs.length" class="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-                                <div v-for="item in activeOptionalArgs" :key="item.key" class="rounded-lg border border-zinc-800 bg-zinc-900/70 p-3">
-                                    <div class="flex items-start justify-between gap-2"><div><div class="text-xs font-medium text-zinc-300">{{item.label}}</div><div class="font-mono text-[10px] text-zinc-600">{{item.flag}}</div></div><button type="button" @click="removeOptionalArg(item.key)" class="text-zinc-600 hover:text-rose-400" :aria-label="'Remove '+item.label">×</button></div>
-                                    <label v-if="item.type === 'boolean'" class="mt-3 flex items-center gap-2 text-[11px] text-zinc-400"><input type="checkbox" v-model="config.optionalArgs[item.key]"> Enabled</label>
-                                    <select v-else-if="item.type === 'select'" v-model="config.optionalArgs[item.key]" class="input-base mt-2 w-full text-xs"><option v-for="choice in item.options" :key="choice.value" :value="choice.value">{{choice.label}}</option></select>
-                                    <input v-else :type="item.type === 'number' ? 'number' : 'text'" v-model="config.optionalArgs[item.key]" class="input-base mt-2 w-full text-xs" :placeholder="item.placeholder || ''">
-                                </div>
+                            <div class="text-[11px] font-semibold text-zinc-500 uppercase tracking-widest mb-3">Performance / Memory</div>
+                            <div class="grid grid-cols-2 lg:grid-cols-3 gap-x-4 gap-y-5">
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Batch (--batch-size)</label><input type="number" v-model="config.batchSize" class="input-base text-xs" placeholder="기본 2048"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Micro Batch (--ubatch-size)</label><input type="number" v-model="config.ubatchSize" class="input-base text-xs" placeholder="기본 512"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Prompt Threads (--threads-batch)</label><input type="number" v-model="config.threadsBatch" class="input-base text-xs" placeholder="Auto"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Context Checkpoints</label><input type="number" v-model="config.ctxCheckpoints" class="input-base text-xs" placeholder="MTP 장문: 8"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Prompt Cache RAM (MiB)</label><input type="number" v-model="config.cacheRam" class="input-base text-xs" placeholder="기본 8192"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Cache Reuse</label><input type="number" v-model="config.cacheReuse" class="input-base text-xs" placeholder="0 = Off"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Multi-GPU Split</label><select v-model="config.splitMode" class="input-base text-xs"><option value="">Auto</option><option value="none">None</option><option value="layer">Layer</option><option value="row">Row</option><option value="tensor">Tensor</option></select></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Tensor Split</label><input type="text" v-model="config.tensorSplit" class="input-base text-xs" placeholder="예: 1,1"></div>
+                                <div class="flex flex-col"><label class="text-[11px] text-zinc-400 mb-1.5">Main GPU (visible index)</label><input type="number" min="0" v-model="config.mainGpu" class="input-base text-xs" placeholder="Auto"></div>
+                                <label class="flex items-center gap-2 text-[11px] text-zinc-300"><input type="checkbox" v-model="config.cpuMoe"> 모든 MoE weights를 CPU에 배치</label>
+                                <div class="flex flex-col col-span-2"><label class="text-[11px] text-zinc-400 mb-1.5">MoE CPU Layers (--n-cpu-moe)</label><input type="number" min="0" v-model="config.cpuMoeLayers" :disabled="config.cpuMoe" class="input-base text-xs disabled:opacity-40" placeholder="비우면 GPU"></div>
                             </div>
                         </div>
 
                         <!-- Checkboxes -->
                         <div class="flex flex-wrap items-center gap-5 mt-5 pt-4 border-t border-zinc-800">
-                            <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group" :class="sleepIdleEnabled && 'opacity-40'">
-                                <input type="checkbox" v-model="config.fit" :disabled="sleepIdleEnabled" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 transition">
+                            <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group">
+                                <input type="checkbox" v-model="config.fit" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 transition">
                                 <span class="font-mono text-xs">--fit on</span>
                             </label>
                             <label class="flex items-center gap-2 cursor-pointer text-[13px] text-zinc-300 hover:text-white group">
@@ -665,23 +733,6 @@
                         </div>
                     </div>
 
-                    <!-- Behavior Section -->
-                    <div class="bg-zinc-950/50 p-5 rounded-lg border border-zinc-800/80 space-y-4">
-                        <div>
-                            <label class="text-[11px] font-medium text-zinc-400 mb-2 block uppercase tracking-wide">Temperature Presets</label>
-                            <div class="flex flex-col sm:flex-row gap-4 text-xs">
-                                <label class="flex items-center gap-2 cursor-pointer text-zinc-300"><input type="radio" v-model="config.tempMode" value="" class="w-3.5 h-3.5 text-zinc-500 focus:ring-zinc-500/50 focus:ring-offset-zinc-900 bg-zinc-800 border-zinc-700"> None</label>
-                                <label class="flex items-center gap-2 cursor-pointer text-amber-200/80"><input type="radio" v-model="config.tempMode" value="general" class="w-3.5 h-3.5 text-amber-500 focus:ring-amber-500/50 focus:ring-offset-zinc-900 bg-zinc-800 border-zinc-700"> General / Reasoning (1.0)</label>
-                                <label class="flex items-center gap-2 cursor-pointer text-indigo-300"><input type="radio" v-model="config.tempMode" value="coding" class="w-3.5 h-3.5 text-indigo-500 focus:ring-indigo-500/50 focus:ring-offset-zinc-900 bg-zinc-800 border-zinc-700"> Coding / Strict (0.6)</label>
-                            </div>
-                        </div>
-                        <div class="pt-4 border-t border-zinc-800">
-                            <label class="flex items-center gap-2 cursor-pointer text-xs text-emerald-400/80">
-                                <input type="checkbox" v-model="config.useTemplate" class="w-3.5 h-3.5 rounded bg-zinc-800 border-zinc-700 text-emerald-500 focus:ring-emerald-500/50 focus:ring-offset-zinc-900 transition"> 
-                                Enforce Open-CL custom_qwen.jinja template
-                            </label>
-                        </div>
-                    </div>
                 </div>
 
                 <!-- Right: Launch Area -->
@@ -848,19 +899,36 @@
                     <p v-if="releaseInfo.installed" class="text-xs text-emerald-400 mb-3">이 버전은 이미 설치되어 있습니다.</p>
 
                     <template v-if="isWindows">
-                        <p v-if="releaseInfo.assets.length > 0" class="text-xs text-zinc-400 mb-3">Select the appropriate CUDA build for your architecture.</p>
-                        <p v-else class="text-xs text-zinc-400 mb-3">
-                            이 환경에서는 바이너리 자동 배포가 비활성화되어 있습니다.
-                            <a :href="releaseInfo.html_url" target="_blank" class="text-indigo-400 hover:text-indigo-300 underline">GitHub 릴리즈 페이지</a>에서 수동으로 업데이트하세요.
+                        <p class="text-xs text-zinc-400 mb-2">
+                            git 레포(ggml-org/llama.cpp)의 최신 CUDA 빌드를
+                            <span class="font-mono text-zinc-300">{{ releaseInfo.install_root }}</span> 에
+                            <b class="text-zinc-200">CUDA 버전별로 별도 폴더</b>에 설치합니다.
                         </p>
-                        <select v-if="releaseInfo.assets.length > 0" v-model="selectedAsset" class="input-base w-full mb-6 font-mono text-xs">
-                            <option v-for="a in releaseInfo.assets" :key="a.name" :value="a">{{ a.name }}</option>
+                        <p v-if="releaseInfo.stable_tag && releaseInfo.tag_name !== releaseInfo.stable_tag" class="text-[11px] text-zinc-500 mb-3">
+                            stable {{ releaseInfo.stable_tag }}에는 바이너리가 없어, 프리빌트가 있는 최신 빌드({{ releaseInfo.nightly_tag }})를 사용합니다.
+                        </p>
+                        <p v-if="releaseInfo.assets.length > 0" class="text-xs text-zinc-400 mb-2">CUDA 빌드를 선택하세요 (같은 버전이라도 CUDA가 다르면 각각 설치됩니다).</p>
+                        <p v-else class="text-xs text-zinc-400 mb-3">
+                            이 태그에 Windows 프리빌트가 없어 git 소스 빌드가 필요합니다
+                            (CMake + Visual Studio Build Tools + CUDA Toolkit 설치 필요).
+                        </p>
+                        <select v-if="releaseInfo.assets.length > 0" v-model="selectedAsset" class="input-base w-full mb-2 font-mono text-xs">
+                            <option v-for="a in releaseInfo.assets" :key="a.name" :value="a">
+                                {{ assetLabel(a.name) }}
+                            </option>
                         </select>
+                        <p v-if="selectedAsset" class="text-[11px] text-zinc-500 mb-4">
+                            설치 경로: <span class="font-mono text-zinc-300">{{ releaseInfo.install_root }}\llama-{{ releaseInfo.tag_name }}-cuda{{ assetCuda(selectedAsset.name) }}</span>
+                        </p>
                         <div class="flex justify-end gap-3">
                             <button @click="showUpdateModal = false" class="px-4 py-2 text-sm font-medium border border-zinc-700 bg-zinc-800 hover:bg-zinc-700 rounded-lg text-zinc-300 transition">Cancel</button>
                             <button v-if="releaseInfo.assets.length > 0" @click="confirmUpdate" :disabled="isUpdating || !selectedAsset" class="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 rounded-lg transition flex items-center gap-2 disabled:opacity-50">
                                 <span v-if="isUpdating">Downloading...</span>
                                 <span v-else>Fetch & Extract</span>
+                            </button>
+                            <button v-else @click="confirmUpdateLinux" :disabled="isUpdating || buildState.busy" class="px-4 py-2 text-sm font-medium bg-indigo-600 text-white hover:bg-indigo-500 rounded-lg transition flex items-center gap-2 disabled:opacity-50">
+                                <span v-if="isUpdating">Starting...</span>
+                                <span v-else>Build & Install from Git</span>
                             </button>
                         </div>
                     </template>
@@ -933,7 +1001,7 @@
             data() {
                 return {
                     hw: {
-                        cpu: 0, ram: 0, gpu: 0, vram: 0, vram_used: 0, vram_total: 0,
+                        cpu: 0, ram: 0, ram_used: 0, ram_total: 0, gpu: 0, vram: 0, vram_used: 0, vram_total: 0,
                         cpu_temp: null, cpu_core_temps: [], cpu_fan: null, cpu_power: null,
                         ram_temp: null,
                         gpu_temp: null, gpu_hotspot: null, gpu_fan: null, gpu_power: null,
@@ -946,11 +1014,17 @@
                     logTimer: null, hwTimer: null,
                     gpuTopology: { available: false, gpus: [], services: {} },
                     gpuTuning: { available: false, gpus: [] }, gpuTuningSaving: false,
+                    cmp170Unlock: { available:false, detected:false, unlocked:false, memory_mib:null, staged_inf:'', autostart:false, running:false, action:'', status:'unknown', message:'상태 확인 중', last_log:[] },
+                    cmp170Busy: false,
+                    motherboardFans: { available: false, conflict: false, channels: [], runtime: {} },
+                    motherboardFanEdit: { enabled:false, channel_id:'', channel_label:'', fan_role:'cmp170hx_hbm', gpu_uuid:'', curve_mode:'linear', min_percent:40, max_percent:100, hysteresis_c:2, down_delay_seconds:30, curve:[{temp:40,percent:40},{temp:55,percent:48},{temp:65,percent:60},{temp:75,percent:75},{temp:82,percent:90},{temp:85,percent:100}] },
+                    motherboardCpuFanEdit: { enabled:false, channel_id:'', channel_label:'CPU 팬', fan_role:'cpu_package', gpu_uuid:'', curve_mode:'step', min_percent:20, max_percent:100, hysteresis_c:3, down_delay_seconds:20, curve:[{temp:30,percent:20},{temp:45,percent:25},{temp:55,percent:35},{temp:65,percent:50},{temp:75,percent:75},{temp:85,percent:100}] },
+                    motherboardFanSaving: false, motherboardFanManualChannel: '', motherboardFanManualPercent: 60, motherboardFanEditLoaded: false,
                     gpuThermalEvents: { threshold_c: 85, counts: {}, events: [] },
                     expandedGpus: {},
                     managerService: { enabled: false },
                     servicePorts: { comfyui: 8188, llama: 8080, vllm: 8000 },
-                    autoStart: { autostart: false, autostart_llama: false, autostart_comfyui: false, autostart_bot: false, autostart_watcher: false, autostart_vllm: false },
+                    autoStart: { autostart: false, autostart_llama: false, autostart_comfyui: false, autostart_bot: false, autostart_watcher: false, autostart_vllm: false, gpu_tuning_enabled: true },
                     autoStartDefs: [
                         { key: 'autostart_comfyui', label: 'ComfyUI' }, { key: 'autostart_llama', label: 'llama.cpp' }, { key: 'autostart_vllm', label: 'vLLM' },
                         { key: 'autostart_bot', label: 'Bot' }, { key: 'autostart_watcher', label: 'Watcher' }
@@ -958,6 +1032,7 @@
                     comfySettings: {
                         listen: true,
                         use_sage_attention: true,
+                        disable_cuda_malloc: false,
                         preview_method_none: false,
                         cache_none: false,
                         reserve_vram_enabled: true,
@@ -971,48 +1046,30 @@
                     comfyOptionDefs: [
                         { key: 'listen', label: '--listen 0.0.0.0' },
                         { key: 'use_sage_attention', label: '--use-sage-attention' },
+                        { key: 'disable_cuda_malloc', label: '--disable-cuda-malloc' },
                         { key: 'preview_method_none', label: '--preview-method none' },
                         { key: 'cache_none', label: '--cache-none' },
                         { key: 'disable_async_offload', label: '--disable-async-offload' },
                         { key: 'fast_disk', label: '--fast-disk' },
                         { key: 'fast_fp16_accumulation', label: '--fast fp16_accumulation' }
                     ],
-                    optionalArgToAdd: '',
-                    optionalArgDefs: [
-                        {key:'batchSize',label:'Batch size',flag:'--batch-size',type:'number',default:'2048',placeholder:'2048'},
-                        {key:'ubatchSize',label:'Micro batch',flag:'--ubatch-size',type:'number',default:'512',placeholder:'512'},
-                        {key:'threadsBatch',label:'Prompt threads',flag:'--threads-batch',type:'number',default:'',placeholder:'Auto'},
-                        {key:'loadMode',label:'Model load mode',flag:'--load-mode',type:'select',default:'auto',options:[{value:'auto',label:'Auto'},{value:'none',label:'None'},{value:'mmap',label:'mmap'},{value:'mlock',label:'mlock'},{value:'mmap+mlock',label:'mmap + mlock'},{value:'dio',label:'Direct I/O'}]},
-                        {key:'splitMode',label:'Multi-GPU split mode',flag:'--split-mode',type:'select',default:'layer',options:[{value:'none',label:'None'},{value:'layer',label:'Layer'},{value:'row',label:'Row'},{value:'tensor',label:'Tensor'}]},
-                        {key:'tensorSplit',label:'Tensor split',flag:'--tensor-split',type:'text',default:'',placeholder:'1,1'},
-                        {key:'mainGpu',label:'Main GPU',flag:'--main-gpu',type:'number',default:'0',placeholder:'0'},
-                        {key:'cpuMoe',label:'MoE weights on CPU',flag:'--cpu-moe',type:'boolean',default:true},
-                        {key:'cpuMoeLayers',label:'MoE CPU layers',flag:'--n-cpu-moe',type:'number',default:'',placeholder:'Layer count'},
-                        {key:'cacheSwa',label:'Full-size SWA cache',flag:'--swa-full',type:'boolean',default:true},
-                        {key:'cacheReuse',label:'Prompt cache reuse',flag:'--cache-reuse',type:'number',default:'',placeholder:'Minimum chunk'},
-                        {key:'serverTimeout',label:'Server timeout',flag:'--timeout',type:'number',default:'3600',placeholder:'Seconds'},
-                        {key:'httpThreads',label:'HTTP threads',flag:'--threads-http',type:'number',default:'',placeholder:'Auto'},
-                        {key:'metrics',label:'Prometheus metrics',flag:'--metrics',type:'boolean',default:true},
-                        {key:'noSlots',label:'Hide slots endpoint',flag:'--no-slots',type:'boolean',default:true},
-                        {key:'noWarmup',label:'Skip warmup',flag:'--no-warmup',type:'boolean',default:true}
-                    ],
                     memo: { show: false, content: '', saving: false }, memoTimeout: null,
                     isFetchingReleases: false, showUpdateModal: false,
-                    releaseInfo: { tag_name: "", html_url: "", assets: [], installed: false },
+                    releaseInfo: { tag_name: "", html_url: "", assets: [], installed: false, install_root: "", stable_tag: "", nightly_tag: "", driver_max_cuda: null },
                     selectedAsset: null, isUpdating: false,
-                    modelRootInput: "/mnt/model", modelRootSaving: false, vramCleanupEnabled: true,
+                    modelRootInput: "/mnt/model", modelRootSaving: false,
                     buildState: { busy: false, tag: "", message: "", lastTag: "" },
                     buildLog: "", buildLogTimer: null, isWindows: false,
                     llamaInstallRoot: "/opt",
                     isRestarting: false, restartCountdown: 6,
                     selectedPreset: "", presets: {},
                     config: {
-                        version: "", model: "", mmproj: "", ctx: "262144", host: "0.0.0.0", port: "8080",
-                        fit: true, flash: true, cacheK: "q4_0", cacheV: "q4_0", tempMode: "", useTemplate: false,
+                        version: "", model: "", mmproj: "", alias: "", ctx: "32768", host: "0.0.0.0", port: "8080",
+                        fit: true, flash: true, cacheK: "q8_0", cacheV: "q8_0",
                         reasoningMode: "auto", reasoningBudget: "", ngl: "auto", fitTarget: "1024", nPredict: "-1", parallel: "1", threads: "",
-                        sleepIdleSeconds: "", specType: "", specDraftNMax: "2", specDraftNMin: "",
-                        specDraftPSplit: "", specDraftPMin: "", specDraftNgl: "", specDraftDevice: "",
-                        optionalArgs: {}, gpuDevices: []
+                        batchSize: "", ubatchSize: "", threadsBatch: "", ctxCheckpoints: "", cacheRam: "", cacheReuse: "",
+                        splitMode: "", tensorSplit: "", mainGpu: "", cpuMoe: false, cpuMoeLayers: "",
+                        specType: "", specDraftNMax: "4", specDraftModel: "", specDraftNgl: "", gpuDevices: []
                     },
                     hwHistoryModal: { show: false, history: [] },
                     hwHistoryTimer: null,
@@ -1022,61 +1079,41 @@
                 };
             },
             computed: {
-                sleepIdleEnabled() {
-                    const value = Number(this.config.sleepIdleSeconds);
-                    return this.config.sleepIdleSeconds !== '' && Number.isInteger(value) && value >= 0;
+                manualFanName() {
+                    const id = this.motherboardFans.runtime?.manual_channel_id;
+                    return (this.motherboardFans.channels || []).find(fan => fan.id === id)?.name || '팬';
                 },
-                availableOptionalArgs() { return this.optionalArgDefs.filter(item => !Object.prototype.hasOwnProperty.call(this.config.optionalArgs || {}, item.key)); },
-                activeOptionalArgs() { return this.optionalArgDefs.filter(item => Object.prototype.hasOwnProperty.call(this.config.optionalArgs || {}, item.key)); },
                 computedCommand() {
                     let cmd =[];
                     if (this.config.gpuDevices?.length) cmd.push(`CUDA_VISIBLE_DEVICES="${this.config.gpuDevices.join(',')}"`);
                     if (this.config.model) cmd.push(`-m "${this.config.model}"`);
-                    if (this.config.mmproj) cmd.push(`--mmproj "${this.config.mmproj}"`);
+                    if (this.config.mmproj) cmd.push(`--mmproj "${this.config.mmproj}"`); else cmd.push('--no-mmproj-auto');
+                    if (this.config.alias) cmd.push(`--alias "${this.config.alias}"`);
                     if (this.config.host) cmd.push(`--host ${this.config.host}`);
-                    cmd.push(`--port 8082`);
+                    cmd.push(`--port ${this.config.port || '8080'}`);
                     if (this.config.ctx) cmd.push(`--ctx-size ${this.config.ctx}`);
                     
                     if (this.config.ngl && this.config.ngl !== "") cmd.push(`-ngl ${this.config.ngl}`);
                     if (this.config.reasoningMode !== 'off' && this.config.reasoningBudget !== "") cmd.push(`--reasoning-budget ${this.config.reasoningBudget}`);
                     if (this.config.reasoningMode && this.config.reasoningMode !== 'auto') cmd.push(`--reasoning ${this.config.reasoningMode}`);
-                    if (this.config.nPredict && this.config.nPredict !== "-1") cmd.push(`-n ${this.config.nPredict}`);
-                    if (this.config.parallel && this.config.parallel !== "1") cmd.push(`-np ${this.config.parallel}`);
+                    if (this.config.nPredict !== '') cmd.push(`-n ${this.config.nPredict}`);
+                    if (this.config.parallel !== '') cmd.push(`-np ${this.config.parallel}`);
                     if (this.config.threads && this.config.threads !== "") cmd.push(`-t ${this.config.threads}`);
 
-                    if (this.config.fit && !this.sleepIdleEnabled) { cmd.push(`--fit on`); if (this.config.fitTarget) cmd.push(`--fit-target ${this.config.fitTarget}`); }
+                    if (this.config.fit) { cmd.push(`--fit on`); if (this.config.fitTarget) cmd.push(`--fit-target ${this.config.fitTarget}`); }
                     else cmd.push(`--fit off`);
                     if (this.config.flash) cmd.push(`--flash-attn on`);
-                    if (this.config.cacheK) cmd.push(`--cache-type-k ${this.config.cacheK}`);
-                    if (this.config.cacheV) cmd.push(`--cache-type-v ${this.config.cacheV}`);
-
-                    if (this.config.sleepIdleSeconds !== "" && this.config.sleepIdleSeconds !== null) {
-                        cmd.push(`--sleep-idle-seconds ${this.config.sleepIdleSeconds}`);
-                    }
+                    if (this.config.cacheK) cmd.push(`-ctk ${this.config.cacheK}`);
+                    if (this.config.cacheV) cmd.push(`-ctv ${this.config.cacheV}`);
+                    const valueFlags = {batchSize:'--batch-size',ubatchSize:'--ubatch-size',threadsBatch:'--threads-batch',ctxCheckpoints:'--ctx-checkpoints',cacheRam:'--cache-ram',cacheReuse:'--cache-reuse',splitMode:'--split-mode',tensorSplit:'--tensor-split',mainGpu:'--main-gpu'};
+                    for (const [key, flag] of Object.entries(valueFlags)) if (this.config[key] !== '' && this.config[key] !== null) cmd.push(`${flag} ${this.config[key]}`);
+                    if (this.config.cpuMoe) cmd.push('--cpu-moe'); else if (this.config.cpuMoeLayers !== '') cmd.push(`--n-cpu-moe ${this.config.cpuMoeLayers}`);
 
                     if (this.config.specType) {
                         cmd.push(`--spec-type ${this.config.specType}`);
                         if (this.config.specDraftNMax) cmd.push(`--spec-draft-n-max ${this.config.specDraftNMax}`);
-                        if (this.config.specDraftNMin) cmd.push(`--spec-draft-n-min ${this.config.specDraftNMin}`);
-                        if (this.config.specDraftPSplit) cmd.push(`--spec-draft-p-split ${this.config.specDraftPSplit}`);
-                        if (this.config.specDraftPMin) cmd.push(`--spec-draft-p-min ${this.config.specDraftPMin}`);
+                        if (this.config.specDraftModel) cmd.push(`--spec-draft-model "${this.config.specDraftModel}"`);
                         if (this.config.specDraftNgl) cmd.push(`--spec-draft-ngl ${this.config.specDraftNgl}`);
-                        if (this.config.specDraftDevice) cmd.push(`--spec-draft-device ${this.config.specDraftDevice}`);
-                    }
-
-                    if (this.config.tempMode === 'general') {
-                        cmd.push(`--temp 1.0 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 1.5 --repeat-penalty 1.0`);
-                    } else if (this.config.tempMode === 'coding') {
-                        cmd.push(`--temp 0.6 --top-p 0.95 --top-k 20 --min-p 0.0 --presence-penalty 0.0 --repeat-penalty 1.0`);
-                    }
-
-                    if (this.config.useTemplate) {
-                        cmd.push(`--jinja`);
-                    }
-                    for (const item of this.activeOptionalArgs) {
-                        const value = this.config.optionalArgs[item.key];
-                        if (item.type === 'boolean') { if (value) cmd.push(item.flag); }
-                        else if (value !== '' && value !== null && value !== undefined) cmd.push(`${item.flag} ${value}`);
                     }
                     return cmd.join(" ");
                 }
@@ -1093,9 +1130,53 @@
                     return parts[parts.length - 1] || path;
                 },
 
+                assetCuda(name) {
+                    const m = String(name || "").toLowerCase().match(/cuda[-_]?(\d+)(?:\.(\d+))?/);
+                    if (!m) return "";
+                    return m[1] + (m[2] ? "." + m[2] : "");
+                },
+
+                assetCompatible(name) {
+                    const max = this.releaseInfo.driver_max_cuda;
+                    if (max == null) return true;
+                    const c = this.assetCuda(name);
+                    if (!c) return true;
+                    const [maj, min] = c.split(".").map(Number);
+                    return (maj * 100 + (min || 0)) <= max;
+                },
+
+                // 인-DOM 템플릿에서 복잡한 인라인 표현식(삼항+문자열+'>')이
+                // 브라우저 HTML 파싱에 의해 깨져 Vue 컴파일 에러가 나므로,
+                // 라벨 조립 로직은 전부 메서드로 뺀다.
+                assetLabel(name) {
+                    const base = String(name || "");
+                    if (this.assetCompatible(name)) return base;
+                    const max = (this.releaseInfo.driver_max_cuda / 100).toFixed(1);
+                    return base + "  (이 드라이버 미지원: CUDA " + this.assetCuda(name) + " > " + max + ")";
+                },
+
                 gpuIndex(uuid) {
                     const gpu = this.gpuTopology.gpus.find(item => item.uuid === uuid);
                     return gpu ? gpu.index : '?';
+                },
+                visibleGpuProcesses(gpu) {
+                    return (gpu?.processes || []).filter(process => process.service !== 'other');
+                },
+                gpuProcessLabel(process) {
+                    return process?.service === 'system' ? '미분류 / 드라이버' : (process?.service_label || 'Unknown');
+                },
+                serviceVramLabel(key) {
+                    const service = this.gpuTopology.services?.[key];
+                    if (!service) return '--';
+                    if (service.running && service.active_gpu_indexes?.length && !service.vram_used_gb) return '측정 불가';
+                    return `${service.vram_used_gb || 0} GB`;
+                },
+                configuredGpuLabel(service) {
+                    const devices = service?.configured_devices || [];
+                    return devices.length ? devices.map(uuid => `GPU ${this.gpuIndex(uuid)}`).join(', ') : '모든 GPU';
+                },
+                hasOffloadData(offload) {
+                    return !!offload && Object.values(offload).some(value => value !== null && value !== undefined);
                 },
                 toggleLlamaGpu(uuid) {
                     const devices = [...(this.config.gpuDevices || [])];
@@ -1110,34 +1191,60 @@
                     [devices[index], devices[target]] = [devices[target], devices[index]];
                     this.config.gpuDevices = devices;
                 },
-                addOptionalArg() {
-                    const item = this.optionalArgDefs.find(def => def.key === this.optionalArgToAdd);
-                    if (!item) return;
-                    this.config.optionalArgs = { ...(this.config.optionalArgs || {}), [item.key]: item.default };
-                    this.optionalArgToAdd = '';
-                },
-                removeOptionalArg(key) {
-                    const values = { ...(this.config.optionalArgs || {}) };
-                    delete values[key];
-                    this.config.optionalArgs = values;
-                },
                 validateLlamaConfig() {
-                    const values = this.config.optionalArgs || {};
-                    if (values.batchSize && values.ubatchSize && Number(values.ubatchSize) > Number(values.batchSize)) {
+                    if (this.config.batchSize && this.config.ubatchSize && Number(this.config.ubatchSize) > Number(this.config.batchSize)) {
                         alert('Micro batch는 Batch size보다 클 수 없습니다.'); return false;
                     }
-                    if (values.cpuMoe && values.cpuMoeLayers) {
+                    if (this.config.cpuMoe && this.config.cpuMoeLayers) {
                         alert('--cpu-moe와 --n-cpu-moe는 동시에 사용할 수 없습니다.'); return false;
+                    }
+                    if (this.config.specType && (!Number.isInteger(Number(this.config.specDraftNMax)) || Number(this.config.specDraftNMax) < 1 || Number(this.config.specDraftNMax) > 64)) {
+                        alert('Draft N Max는 1~64 정수여야 합니다.'); return false;
                     }
                     return true;
                 },
-                normalizeSleepFit() {
-                    const value = Number(this.config.sleepIdleSeconds);
-                    if (this.config.sleepIdleSeconds !== '' && Number.isInteger(value) && value >= 0) this.config.fit = false;
+                normalizeLlamaConfig(raw = {}) {
+                    const legacy = raw.optionalArgs && typeof raw.optionalArgs === 'object' ? raw.optionalArgs : {};
+                    const merged = { ...this.config, ...raw };
+                    for (const key of ['batchSize','ubatchSize','threadsBatch','ctxCheckpoints','cacheRam','cacheReuse','splitMode','tensorSplit','mainGpu','cpuMoe','cpuMoeLayers']) {
+                        if (raw[key] === undefined && legacy[key] !== undefined) merged[key] = legacy[key];
+                    }
+                    if (!Array.isArray(merged.gpuDevices)) merged.gpuDevices = merged.device ? [merged.device] : [];
+                    if (merged.specType === 'draft-mtp') merged.specDraftModel = '';
+                    const clean = {};
+                    for (const key of Object.keys(this.config)) clean[key] = merged[key] === undefined ? this.config[key] : merged[key];
+                    return clean;
                 },
 
                 async fetchGpuTopology() {
                     try { const res = await fetch('/api/gpus'); this.gpuTopology = await res.json(); } catch (e) {}
+                },
+                async fetchCmp170Unlock() {
+                    if (!this.isWindows || this.cmp170Busy) return;
+                    try {
+                        const res = await fetch('/api/cmp170/unlock'); const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || 'CMP 170HX 상태 조회 실패');
+                        this.cmp170Unlock = data;
+                    } catch (e) { this.cmp170Unlock.message = e.message; }
+                },
+                async runCmp170Unlock() {
+                    if (!confirm('GPU 작업을 모두 중지한 상태에서 CMP 170HX 64GB 언락을 실행할까요?\n\nWindows 관리자 권한 확인 창이 한 번 표시됩니다.')) return;
+                    await this.cmp170Action('run');
+                },
+                async toggleCmp170Autostart() {
+                    const action = this.cmp170Unlock.autostart ? 'unregister' : 'register';
+                    const label = action === 'register' ? '다음 로그인부터 자동으로 언락하도록 등록할까요?' : '로그인 자동 언락을 해제할까요?';
+                    if (!confirm(label + '\n\nWindows 관리자 권한 확인 창이 한 번 표시됩니다.')) return;
+                    await this.cmp170Action(action);
+                },
+                async cmp170Action(action) {
+                    this.cmp170Busy = true;
+                    try {
+                        const res = await fetch('/api/cmp170/unlock', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action})});
+                        const data = await res.json(); if (!res.ok) throw new Error(data.detail || '작업 시작 실패');
+                        this.cmp170Unlock = {...this.cmp170Unlock, ...data};
+                    } catch (e) { alert('CMP 170HX 작업 실패: ' + e.message); }
+                    finally { this.cmp170Busy = false; setTimeout(() => this.fetchCmp170Unlock(), 1000); }
                 },
                 async fetchGpuThermalEvents() {
                     try {
@@ -1219,20 +1326,84 @@
                         await this.fetchGpuTuning();
                     } catch(e) { alert('GPU 설정 비활성화 실패: '+e.message); } finally { this.gpuTuningSaving=false; }
                 },
+                async fetchMotherboardFans() {
+                    if (!this.isWindows || this.motherboardFanSaving) return;
+                    try {
+                        const res = await fetch('/api/motherboard-fans'); const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || '메인보드 팬 조회 실패');
+                        this.motherboardFans = data;
+                        if (data.runtime?.control_mode === 'manual' && data.runtime?.manual_channel_id) {
+                            this.motherboardFanManualChannel = data.runtime.manual_channel_id;
+                            this.motherboardFanManualPercent = data.runtime.target_percent ?? this.motherboardFanManualPercent;
+                        }
+                        if (!this.motherboardFanEditLoaded) {
+                            this.motherboardFanEdit = JSON.parse(JSON.stringify(data.settings || this.motherboardFanEdit));
+                            this.motherboardCpuFanEdit = JSON.parse(JSON.stringify(data.settings?.cpu || this.motherboardCpuFanEdit));
+                            this.motherboardFanEditLoaded = true;
+                        }
+                    } catch(e) { this.motherboardFans.message = e.message; }
+                },
+                async saveMotherboardFanConfig() {
+                    if (this.motherboardFanEdit.enabled && !confirm('선택한 메인보드 팬을 GPU HBM 온도 커브로 자동 제어할까요?\n\n다른 팬 제어 프로그램은 동시에 실행하면 안 됩니다.')) return;
+                    this.motherboardFanSaving = true;
+                    try {
+                        const payload = {...this.motherboardFanEdit, cpu:this.motherboardCpuFanEdit};
+                        const res = await fetch('/api/motherboard-fans/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+                        const data = await res.json(); if(!res.ok) throw new Error(data.detail || '저장 실패');
+                        this.motherboardFans = data;
+                        this.motherboardFanEdit = JSON.parse(JSON.stringify(data.settings || this.motherboardFanEdit));
+                        this.motherboardCpuFanEdit = JSON.parse(JSON.stringify(data.settings?.cpu || this.motherboardCpuFanEdit));
+                    } catch(e) { alert('메인보드 팬 설정 실패: '+e.message); } finally { this.motherboardFanSaving=false; }
+                },
+                async saveMotherboardCpuFanConfig() {
+                    if (this.motherboardCpuFanEdit.enabled && !confirm('선택한 채널을 CPU Package 온도에 따라 자동 제어할까요?\n\nCPU 팬 채널이 맞는지 먼저 수동 팬 찾기로 확인하는 것을 권장합니다.')) return;
+                    this.motherboardFanSaving = true;
+                    try {
+                        const payload = {...this.motherboardFanEdit, cpu:this.motherboardCpuFanEdit};
+                        const res = await fetch('/api/motherboard-fans/config', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
+                        const data=await res.json(); if(!res.ok) throw new Error(data.detail || '저장 실패');
+                        this.motherboardFans=data;
+                        this.motherboardFanEdit=JSON.parse(JSON.stringify(data.settings || this.motherboardFanEdit));
+                        this.motherboardCpuFanEdit=JSON.parse(JSON.stringify(data.settings?.cpu || this.motherboardCpuFanEdit));
+                    } catch(e) { alert('CPU 팬 설정 실패: '+e.message); } finally { this.motherboardFanSaving=false; }
+                },
+                async setMotherboardFanMode(mode) {
+                    const manual = mode === 'manual';
+                    if (manual === (this.motherboardFans.runtime?.control_mode === 'manual')) return;
+                    if (manual && !confirm('자동 HBM 팬 제어를 잠시 멈추고 수동 팬 찾기로 전환할까요?\n\n저장된 자동 설정은 변경되지 않습니다.')) return;
+                    this.motherboardFanSaving = true;
+                    try {
+                        const res = await fetch('/api/motherboard-fans/action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:manual ? 'manual_enter' : 'manual_stop'})});
+                        const data=await res.json(); if(!res.ok) throw new Error(data.detail || '모드 전환 실패');
+                        this.motherboardFans=data.status || this.motherboardFans;
+                        if (manual && !this.motherboardFanManualChannel) this.motherboardFanManualChannel = this.motherboardFanEdit.channel_id || this.motherboardFans.channels?.[0]?.id || '';
+                    } catch(e) { alert('팬 모드 전환 실패: '+e.message); } finally { this.motherboardFanSaving=false; }
+                },
+                async applyManualMotherboardFan() {
+                    this.motherboardFanSaving = true;
+                    try {
+                        const percent = Math.max(20, Math.min(100, Number(this.motherboardFanManualPercent)));
+                        this.motherboardFanManualPercent = percent;
+                        const res = await fetch('/api/motherboard-fans/action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'manual_set', channel_id:this.motherboardFanManualChannel, percent})});
+                        const data=await res.json(); if(!res.ok) throw new Error(data.detail || '수동 PWM 적용 실패');
+                        this.motherboardFans=data.status || this.motherboardFans;
+                    } catch(e) { alert('수동 팬 제어 실패: '+e.message); } finally { this.motherboardFanSaving=false; }
+                },
+                async resetMotherboardFans() {
+                    this.motherboardFanSaving = true;
+                    try {
+                        const res = await fetch('/api/motherboard-fans/action', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'reset'})});
+                        const data=await res.json(); if(!res.ok) throw new Error(data.detail || '복귀 실패');
+                        this.motherboardFans=data.status || this.motherboardFans;
+                    } catch(e) { alert('팬 기본 모드 복귀 실패: '+e.message); } finally { this.motherboardFanSaving=false; }
+                },
                 async saveAutoStart() {
                     try {
                         const res = await fetch('/api/linux-settings', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(this.autoStart)});
                         if (!res.ok) throw new Error(await res.text());
+                        const data = await res.json();
+                        if (data.manager_service) this.managerService = data.manager_service;
                     } catch (e) { alert('자동 실행 설정 저장 실패: '+e.message); }
-                },
-
-                async registerManagerService() {
-                    if (!confirm('로그온 시 manager를 자동으로 시작하는 Task Scheduler 태스크(MainServer)를 등록할까요?\n\n중단 시 5초 후 자동 재시작도 함께 적용됩니다.')) return;
-                    try {
-                        const res = await fetch('/api/manager-service/register', { method: 'POST' });
-                        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || await res.text());
-                        this.managerService = { ...this.managerService, enabled: true };
-                    } catch (e) { alert('자동 시작 등록 실패: '+e.message); }
                 },
 
                 // 모던한 컬러 팔레트 적용 (Zinc, Emerald, Amber, Rose)
@@ -1310,10 +1481,13 @@
                     try {
                         const res = await fetch('/api/hardware');
                         const d = await res.json();
-                        const g = (d.gpus && d.gpus[0]) || {};
+                        const gpus = Array.isArray(d.gpus) ? d.gpus : [];
+                        const g = gpus[0] || {};
                         this.hw = {
                             cpu: d.cpu_percent ?? 0,
                             ram: d.ram_percent ?? 0,
+                            ram_used: +((d.ram_used || 0) / 1073741824).toFixed(1),
+                            ram_total: +((d.ram_total || 0) / 1073741824).toFixed(1),
                             gpu: g.util ?? 0,
                             vram: g.mem_util ?? 0,
                             vram_used: +((g.vram_used || 0) / 1024).toFixed(1),
@@ -1321,7 +1495,8 @@
                             cpu_temp: null, cpu_core_temps: [], cpu_fan: null, cpu_power: null,
                             ram_temp: null,
                             gpu_temp: g.temp ?? null, gpu_hotspot: null, gpu_fan: null, gpu_power: g.power ?? null,
-                            lhm_available: false
+                            lhm_available: false,
+                            gpus: gpus
                         };
                     } catch (e) { }
                 },
@@ -1377,7 +1552,7 @@
                         this.servicePorts = {
                             ...this.servicePorts,
                             comfyui: Number(runtimeSettings.comfyui_port) || this.servicePorts.comfyui,
-                            llama: Number(d.llama_ports?.public || runtimeSettings.llama_port) || this.servicePorts.llama,
+                            llama: Number(d.llama_port || runtimeSettings.llama_port) || this.servicePorts.llama,
                             vllm: Number(runtimeSettings.vllm_port) || this.servicePorts.vllm
                         };
                     } catch (e) { }
@@ -1506,7 +1681,7 @@
                     this.fetchLogs();
                     this.fetchHardware();
                     this.logTimer = setInterval(this.fetchLogs, 1000);
-                    this.hwTimer = setInterval(this.fetchHardware, 2000);
+                    this.hwTimer = setInterval(this.fetchHardware, 5000);
                 },
                 closeLogModal() {
                     this.logModal.show = false;
@@ -1672,6 +1847,10 @@
                             assets: data.assets || [],
                             installed: !!data.installed,
                             git_url: data.git_url || '',
+                            install_root: data.install_root || '',
+                            stable_tag: data.stable_tag || '',
+                            nightly_tag: data.nightly_tag || '',
+                            driver_max_cuda: (data.driver_max_cuda != null) ? data.driver_max_cuda : null,
                         };
                         this.selectedAsset = null;
                         this.showUpdateModal = true;
@@ -1720,22 +1899,7 @@
                         const res = await fetch('/api/llama/settings');
                         const data = await res.json();
                         this.modelRootInput = data.model_root || this.modelRootInput;
-                        this.vramCleanupEnabled = data.vram_cleanup_enabled !== false;
                     } catch (e) {}
-                },
-
-                async saveVramToggle() {
-                    try {
-                        const res = await fetch('/api/llama/settings', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ model_root: this.modelRootInput, vram_cleanup_enabled: this.vramCleanupEnabled })
-                        });
-                        if (!res.ok) {
-                            const err = await res.json().catch(() => null);
-                            throw new Error(err?.detail || await res.text());
-                        }
-                    } catch (e) { alert('VRAM 클리너 설정 저장 실패: ' + e.message); }
                 },
 
                 async saveModelRoot() {
@@ -1744,7 +1908,7 @@
                         const res = await fetch('/api/llama/settings', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ model_root: this.modelRootInput, vram_cleanup_enabled: this.vramCleanupEnabled })
+                            body: JSON.stringify({ model_root: this.modelRootInput })
                         });
                         if (!res.ok) {
                             const err = await res.json().catch(() => null);
@@ -1836,8 +2000,7 @@
                 
                 loadPreset() {
                     if (this.selectedPreset && this.presets[this.selectedPreset]) {
-                        this.config = { ...this.config, ...this.presets[this.selectedPreset] };
-                        this.normalizeSleepFit();
+                        this.config = this.normalizeLlamaConfig(this.presets[this.selectedPreset]);
                     }
                 },
                 
@@ -1846,25 +2009,7 @@
                         const res = await fetch('/api/last_run');
                         const lastRunData = await res.json();
                         if (Object.keys(lastRunData).length > 0) {
-                            this.config = { ...this.config, ...lastRunData };
-                            if(this.config.reasoningBudget === undefined) this.config.reasoningBudget = "";
-                            if(this.config.reasoningMode === undefined) this.config.reasoningMode = "auto";
-                            if(this.config.ngl === undefined) this.config.ngl = "auto";
-                            if(this.config.fitTarget === undefined) this.config.fitTarget = "1024";
-                            if(this.config.nPredict === undefined) this.config.nPredict = "-1";
-                            if(this.config.parallel === undefined) this.config.parallel = "1";
-                            if(this.config.threads === undefined) this.config.threads = "";
-                            if(this.config.sleepIdleSeconds === undefined) this.config.sleepIdleSeconds = "";
-                            if(this.config.specType === undefined) this.config.specType = "";
-                            if(this.config.specDraftNMax === undefined) this.config.specDraftNMax = "2";
-                            if(this.config.specDraftNMin === undefined) this.config.specDraftNMin = "";
-                            if(this.config.specDraftPSplit === undefined) this.config.specDraftPSplit = "";
-                            if(this.config.specDraftPMin === undefined) this.config.specDraftPMin = "";
-                            if(this.config.specDraftNgl === undefined) this.config.specDraftNgl = "";
-                            if(this.config.specDraftDevice === undefined) this.config.specDraftDevice = "";
-                            if(!this.config.optionalArgs || typeof this.config.optionalArgs !== 'object') this.config.optionalArgs = {};
-                            if(!Array.isArray(this.config.gpuDevices)) this.config.gpuDevices = this.config.device ? [this.config.device] : [];
-                            this.normalizeSleepFit();
+                            this.config = this.normalizeLlamaConfig(lastRunData);
                         }
                     } catch (e) {}
                 }
@@ -1876,9 +2021,11 @@
                 await this.fetchMemo();
                 await this.fetchComfySettings();
                 await this.fetchGpuTopology();
+                await this.fetchCmp170Unlock();
                 await this.fetchGpuThermalEvents();
                 await this.fetchAutoStart();
                 await this.fetchGpuTuning();
+                await this.fetchMotherboardFans();
                 this.fetchScanData();
                 this.fetchStatus();
                 this.fetchHardware();
@@ -1886,15 +2033,26 @@
                 this.fetchMonitorPower();
                 this.fetchSunshineMonitorOff();
                 
+                // Active tabs refresh lightweight values every 5 seconds and
+                // heavier topology/settings every 10 seconds. Hidden tabs drop
+                // to one refresh per 30 seconds; fan safety runs server-side and
+                // is completely independent from these browser timers.
+                let dashboardPoll = 0;
                 setInterval(() => {
+                    dashboardPoll += 1;
+                    if (document.hidden && dashboardPoll % 6 !== 0) return;
                     this.fetchStatus();
                     this.fetchHardware();
-                    this.fetchGpuTopology();
-                    this.fetchDesktopMode();
-                    this.fetchSunshineMonitorOff();
-                }, 2000);
-                setInterval(() => this.fetchMonitorPower(), 5000);
-                setInterval(() => this.fetchGpuThermalEvents(), 5000);
+                    this.fetchMotherboardFans();
+                    if (document.hidden || dashboardPoll % 2 === 0) {
+                        this.fetchGpuTopology();
+                        this.fetchDesktopMode();
+                        this.fetchSunshineMonitorOff();
+                        this.fetchMonitorPower();
+                        this.fetchGpuThermalEvents();
+                        this.fetchCmp170Unlock();
+                    }
+                }, 5000);
             }
         }).mount('#app');
     </script>

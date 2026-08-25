@@ -5,9 +5,9 @@ rem manager가 꺼져 있으면 pythonw로 숨겨서 기동하고, 그 다음 �
 powershell -NoProfile -Command "try { Invoke-WebRequest -UseBasicParsing -TimeoutSec 1 http://127.0.0.1:8999/api^/status ^| Out-Null; exit 0 } catch { exit 1 }" >nul 2>&1
 if errorlevel 1 (
   if exist ".venv\Scripts\pythonw.exe" (
-    start "" /min ".venv\Scripts\pythonw.exe" app.py
+    start "" /min ".venv\Scripts\pythonw.exe" app.py >> logs\manager.log 2>&1
   ) else (
-    start "" /min pythonw app.py
+    start "" /min pythonw app.py >> logs\manager.log 2>&1
   )
 )
 for /l %%i in (1,1,30) do (

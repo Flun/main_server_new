@@ -14,6 +14,8 @@ from urllib.parse import urlparse
 
 import requests
 
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+
 from dataset_store import (
     DATASET_ROOT,
     IMAGE_EXTENSIONS,
@@ -257,7 +259,7 @@ def collect_instagram(job):
         cmd += ["--cookies-from-browser", browser]
     cmd.append(url)
     progress(job["id"], 0, max_posts, "Instagram 수집 중")
-    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
     if result.returncode != 0:
         detail = (result.stderr or result.stdout or "gallery-dl 실패")[-3000:]
         if "Permission denied" in detail and "Cookies" in detail:

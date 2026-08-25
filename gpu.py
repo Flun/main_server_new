@@ -1,6 +1,6 @@
 import os
+import copy
 import re
-import shutil
 import subprocess
 import threading
 import time
@@ -20,22 +20,39 @@ GPU_SERVICE_LABELS = {
 
 _EXTENDED_SENSOR_CACHE = {"time": 0.0, "values": {}}
 _EXTENDED_SENSOR_LOCK = threading.Lock()
+_NVML_INIT_LOCK = threading.Lock()
+_NVML_INITIALIZED = False
+_PROCESS_CACHE = {"time": 0.0, "values": []}
+_PROCESS_CACHE_LOCK = threading.Lock()
 
 
 def _run(cmd, timeout=6):
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        # pythonw(콘솔 없음) 환경에서 실행되면 CREATE_NO_WINDOW 없이 자식 프로세스를
+        # 띄울 때마다 새 콘솔 창이 깜빡이며 생성/소멸됩니다.
+        r = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
         return r.stdout or ""
     except Exception:
         return ""
 
 
 def _nvml_backend():
+    global _NVML_INITIALIZED
     gpus = []
     try:
         import pynvml
 
-        pynvml.nvmlInit()
+        if not _NVML_INITIALIZED:
+            with _NVML_INIT_LOCK:
+                if not _NVML_INITIALIZED:
+                    pynvml.nvmlInit()
+                    _NVML_INITIALIZED = True
         count = pynvml.nvmlDeviceGetCount()
         for i in range(count):
             h = pynvml.nvmlDeviceGetHandleByIndex(i)
@@ -161,14 +178,14 @@ def _extended_nvidia_sensors():
         out = _run(
             [
                 "nvidia-smi",
-                "--query-gpu=uuid,temperature.memory,utilization.memory,clocks.current.memory",
+                "--query-gpu=uuid,temperature.memory,utilization.memory,clocks.current.memory,pcie.link.gen.current,pcie.link.width.current,pcie.link.gen.max,pcie.link.width.max",
                 "--format=csv,noheader,nounits",
             ]
         )
         values = {}
         for line in out.strip().splitlines():
             parts = [item.strip() for item in line.split(",")]
-            if len(parts) != 4:
+            if len(parts) != 8:
                 continue
 
             def integer(value):
@@ -181,6 +198,10 @@ def _extended_nvidia_sensors():
                 "temp_memory": integer(parts[1]),
                 "memory_controller_util": integer(parts[2]),
                 "clock_memory": integer(parts[3]),
+                "pcie_gen_current": integer(parts[4]),
+                "pcie_width_current": integer(parts[5]),
+                "pcie_gen_max": integer(parts[6]),
+                "pcie_width_max": integer(parts[7]),
             }
         _EXTENDED_SENSOR_CACHE.update({"time": now, "values": values})
         return values
@@ -194,15 +215,18 @@ def get_gpus():
             for gpu in gpus:
                 gpu.update(extended.get(gpu.get("uuid"), {
                     "temp_memory": None, "memory_controller_util": None,
-                    "clock_memory": None,
+                    "clock_memory": None, "pcie_gen_current": None,
+                    "pcie_width_current": None, "pcie_gen_max": None,
+                    "pcie_width_max": None,
                 }))
             return gpus
     return []
 
 
-def get_gpu_topology():
-    gpus = get_gpus()
-    processes = scan_vram_processes()
+def build_gpu_topology(gpus, processes):
+    """Build topology from an existing sample without polling NVIDIA again."""
+    gpus = copy.deepcopy(gpus or [])
+    processes = copy.deepcopy(processes or [])
     by_uuid = {gpu.get("uuid"): gpu for gpu in gpus}
     for gpu in gpus:
         gpu["processes"] = []
@@ -225,6 +249,10 @@ def get_gpu_topology():
                 "service": "system", "service_label": GPU_SERVICE_LABELS["system"]["label"],
             })
     return {"available": bool(gpus), "gpus": gpus, "processes": processes}
+
+
+def get_gpu_topology():
+    return build_gpu_topology(get_gpus(), scan_vram_processes())
 
 
 def parse_llama_offload(log_path):
@@ -294,38 +322,43 @@ def _classify_process(pid, process_name=""):
     return "other"
 
 
-def scan_vram_processes():
+def scan_vram_processes(force=False):
     """GPU별 프로세스 (nvidia-smi) — 어떤 서비스가 VRAM을 쓰는지 직관적으로 보여주기 위함.
 
     Windows의 nvidia-smi도 동일 쿼리를 지원합니다. 권한이 없는 프로세스는
     used_gpu_memory가 [N/A]/[Insufficient Permissions]로 나와서 자연스럽게 스킵됩니다.
     """
-    out = _run(
-        [
-            "nvidia-smi",
-            "--query-compute-apps=gpu_uuid,pid,used_gpu_memory,process_name",
-            "--format=csv,noheader,nounits",
-        ],
-        timeout=4,
-    )
-    procs = []
-    for line in out.strip().splitlines():
-        p = [x.strip() for x in line.split(",")]
-        if len(p) < 4:
-            continue
-        service = _classify_process(p[1], p[3])
-        label = GPU_SERVICE_LABELS.get(service, {"label": "Other"})["label"]
-        try:
-            used_mb = int(p[2])
-        except ValueError:
-            used_mb = None
-        procs.append({
-            "gpu_uuid": p[0],
-            "pid": int(p[1]),
-            "used_mb": used_mb,
-            "vram_used_gb": round(used_mb / 1024, 2) if used_mb is not None else None,
-            "name": p[3],
-            "service": service,
-            "service_label": label,
-        })
-    return procs
+    now = time.monotonic()
+    with _PROCESS_CACHE_LOCK:
+        if not force and now - _PROCESS_CACHE["time"] < 10.0:
+            return copy.deepcopy(_PROCESS_CACHE["values"])
+        out = _run(
+            [
+                "nvidia-smi",
+                "--query-compute-apps=gpu_uuid,pid,used_gpu_memory,process_name",
+                "--format=csv,noheader,nounits",
+            ],
+            timeout=4,
+        )
+        procs = []
+        for line in out.strip().splitlines():
+            p = [x.strip() for x in line.split(",")]
+            if len(p) < 4:
+                continue
+            service = _classify_process(p[1], p[3])
+            label = GPU_SERVICE_LABELS.get(service, {"label": "Other"})["label"]
+            try:
+                used_mb = int(p[2])
+            except ValueError:
+                used_mb = None
+            procs.append({
+                "gpu_uuid": p[0],
+                "pid": int(p[1]),
+                "used_mb": used_mb,
+                "vram_used_gb": round(used_mb / 1024, 2) if used_mb is not None else None,
+                "name": p[3],
+                "service": service,
+                "service_label": label,
+            })
+        _PROCESS_CACHE.update({"time": now, "values": procs})
+        return copy.deepcopy(procs)

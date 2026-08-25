@@ -15,13 +15,20 @@ echo "의존성 설치..."
 .venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements.txt
 
+MISSING_PACKAGES=()
 if ! command -v ffmpeg >/dev/null 2>&1 || ! command -v ffprobe >/dev/null 2>&1; then
-  echo "Media Studio용 ffmpeg 설치..."
+  MISSING_PACKAGES+=(ffmpeg)
+fi
+if ! command -v mount.cifs >/dev/null 2>&1; then
+  MISSING_PACKAGES+=(cifs-utils)
+fi
+if ((${#MISSING_PACKAGES[@]})); then
+  echo "시스템 의존성 설치: ${MISSING_PACKAGES[*]}"
   if command -v sudo >/dev/null 2>&1 && sudo -n true 2>/dev/null; then
     sudo apt-get update
-    sudo apt-get install -y ffmpeg
+    sudo apt-get install -y "${MISSING_PACKAGES[@]}"
   else
-    echo "[경고] ffmpeg가 없습니다. sudo apt-get install ffmpeg 를 실행해야 Media Studio 변환 기능을 사용할 수 있습니다."
+    echo "[경고] 다음 패키지를 직접 설치해야 합니다: ${MISSING_PACKAGES[*]}"
   fi
 fi
 

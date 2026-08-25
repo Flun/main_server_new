@@ -14,9 +14,7 @@
   SWA/프롬프트 캐시, timeout, HTTP threads, metrics, slots, warmup)
 - 마지막 llama 실행 설정 저장 및 서비스별 자동 시작
 - 물리 GPU UUID 기반 배치, 다중 GPU 순서 지정, 프로세스별 실제 VRAM/오프로딩 표시
-- VRAM 가드 토폴로지: 사용자 API/UI `8080` → 내부 llama-server `8082`.
-  ComfyUI 큐가 유휴 상태가 된 뒤 모델/메모리를 해제하며, ComfyUI 커스텀 노드는
-  교착 방지를 위해 `8082`를 직접 사용
+- llama.cpp API/UI와 ComfyUI 커스텀 노드는 설정된 llama-server 포트(기본 `8080`)를 직접 사용
 - Media Studio의 URL 다운로드, 품질/오디오 옵션, 진행 상태, 경로 복사 기능
 - Dataset, Vast.ai 및 Chrome Instagram 쿠키 브리지 페이지
 - Model Hub 재구현: Hugging Face/Civitai/직접 URL 검사, 파일별 선택,
@@ -44,11 +42,10 @@
 - 실행 파일의 실제 `--help` 및 현재 ComfyUI CLI 정의와 옵션명을 대조
 - Python 구문/컴파일, API 응답, 브라우저 UI, 서비스 재기동, 포트 프록시를 검증 대상으로 삼음
 - Ubuntu 시스템 의존성 `ffmpeg`/`ffprobe`와 Media Studio Python 패키지 설치 확인
-- `--sleep-idle-seconds` 활성화 시 llama.cpp의 알려진 `--fit` 재로딩 충돌을
-  피하도록 `--fit off`를 강제하고 두 번의 sleep/wake 추론 주기를 검증
-- ComfyUI JH llama 노드의 직접 백엔드를 `8082`로 변경하고 기존 `8080`
-  워크플로 입력도 실행 시 자동 변환해 VRAM 가드 자기대기 교착을 방지
-  (`patches/comfyui_jh_llama_8082.patch`로 외부 저장소 변경도 보존)
+- llama.cpp 실행 설정은 모델/비전 projector, 컨텍스트, GPU/KV 캐시,
+  성능·메모리, MoE, speculative/MTP 인자만 명시적으로 관리
+- ComfyUI JH llama 노드는 별도 프록시나 포트 변환 없이 사용자가 지정한 로컬
+  llama-server URL을 직접 호출
 
 ## 원본 없이 완전 복구할 수 없는 범위
 

@@ -51,9 +51,11 @@ DEFAULTS_WINDOWS = {
     "comfyui_dir": r"C:\ComfyUI_windows_portable\ComfyUI",
     "comfyui_python": r"C:\ComfyUI_windows_portable\python_embeded\python.exe",
     "comfyui_port": "8188",
-    # 기존 .unsloth 빌드(llama.cpp)와 신규 llama-<tag> 설치 폴더를 함께 스캔합니다.
-    "llama_install_root": os.path.join(_USERPROFILE, ".unsloth"),
-    "llama_version_glob": os.path.join(_USERPROFILE, ".unsloth", "llama*"),
+    # llama.cpp는 C:\ 루트의 전용 폴더(C:\llama)에 설치합니다.
+    # .unsloth 빌드와 공유하지 않으며, git 레포의 CUDA 빌드를
+    # CUDA 버전별로 따로 폴더에 둡니다 (llama-<tag>-cuda<ver>).
+    "llama_install_root": r"C:\llama",
+    "llama_version_glob": r"C:\llama\llama-*",
     "llama_port": "8080",
     "model_root": r"D:\model",
     "vllm_env": r"C:\vllm-env",
@@ -71,6 +73,8 @@ DEFAULTS.update({
     "autostart_bot": False,
     "autostart_watcher": False,
     "autostart_vllm": False,
+    # GPU 전력/클럭/팬 튜닝 마스터 토글 (끄면 부팅 시 저장값 재적용과 UI 적용을 모두 차단)
+    "gpu_tuning_enabled": True,
 })
 
 ENV_MAP = {
@@ -113,13 +117,14 @@ class Settings:
         except Exception:
             self._data = {}
 
-    def get(self, key):
+    def get(self, key, default=None):
         if key in self._data and self._data[key] not in (None, ""):
             return self._data[key]
         env = ENV_MAP.get(key)
         if env and os.environ.get(env):
             return os.environ[env]
-        return DEFAULTS.get(key, "")
+        # 1-arg 호출은 기존과 동일하게 미상 키에 "" 를 반환합니다.
+        return DEFAULTS.get(key, "" if default is None else default)
 
     def all(self):
         return {k: self.get(k) for k in DEFAULTS}

@@ -3,7 +3,6 @@ import copy
 import json
 import mimetypes
 import os
-import re
 import shutil
 import subprocess
 import threading
@@ -21,6 +20,7 @@ from pydantic import BaseModel
 import logging
 
 logger = logging.getLogger("media")
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 BASE_DIR = Path(__file__).resolve().parent
 MEDIA_WORK_DIR = BASE_DIR / "media_jobs"
@@ -129,39 +129,6 @@ def build_media_download_format(resolution, video_codec):
     fallback = f"bv*{height_filter}+ba/b{height_filter}"
     return preferred if not codec_filter else f"{preferred}/{fallback}"
 
-MEDIA_DOWNLOAD_PERIOD_DAYS = {
-    "today": 0,
-    "month": 30,
-    "year": 365,
-    "five_years": 365 * 5,
-    "all": None,
-}
-
-def safe_download_component(value, fallback="unknown", max_length=120):
-    value = " ".join(str(value or "").split())
-    value = "".join("_" if ch in '<>:"/\\|?*' or ord(ch) < 32 else ch for ch in value)
-    value = value.strip(" ._")[:max_length].rstrip(" ._") or fallback
-    if value.upper() in {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}:
-        value = f"_{value}"
-    return value
-
-def classify_media_url(url):
-    parsed = urlparse(url)
-    host = (parsed.hostname or "").lower()
-    parts = [part for part in parsed.path.split("/") if part]
-    if host == "youtu.be" or host.endswith(".youtu.be"):
-        return "youtube", False
-    if host == "youtube.com" or host.endswith(".youtube.com"):
-        first = parts[0].lower() if parts else ""
-        individual = first in {"watch", "shorts", "live", "embed"} or bool(parsed.query and "v=" in parsed.query)
-        collection = not individual and bool(parts) and (parts[0].startswith("@") or first in {"channel", "c", "user"})
-        return "youtube", collection
-    if host == "instagram.com" or host.endswith(".instagram.com"):
-        first = parts[0].lower() if parts else ""
-        collection = bool(parts) and first not in {"p", "reel", "tv", "stories", "explore", "direct"}
-        return "instagram", collection
-    return "other", False
-
 def media_url_kind(url):
     platform, collection = classify_media_url(url)
     if platform == "youtube" and collection:
@@ -169,66 +136,6 @@ def media_url_kind(url):
         if len(parts) >= 2 and parts[-1] == "shorts":
             return "youtube_shorts"
     return f"{platform}_{'collection' if collection else 'item'}"
-
-def media_period_date(period):
-    if period not in MEDIA_DOWNLOAD_PERIOD_DAYS:
-        raise HTTPException(status_code=400, detail="지원하지 않는 다운로드 기간입니다.")
-    days = MEDIA_DOWNLOAD_PERIOD_DAYS[period]
-    if days is None:
-        return None
-    return date.today() if days == 0 else date.today() - timedelta(days=days)
-
-def gallery_dl_command():
-    try:
-        import gallery_dl  # noqa: F401
-        return [sys.executable, "-m", "gallery_dl"]
-    except ImportError:
-        bundled = BASE_DIR / ".dataset_venv" / "bin" / "python" if os.name != "nt" else BASE_DIR / ".dataset_venv" / "Scripts" / "python.exe"
-        if bundled.is_file():
-            return [str(bundled), "-m", "gallery_dl"]
-        raise HTTPException(status_code=500, detail="gallery-dl이 설치되어 있지 않습니다.")
-
-def resolve_instagram_identity(url, cookie_file):
-    command = gallery_dl_command() + [
-        "--quiet", "--simulate", "--range", "1", "--print", "{username}\t{owner_id}",
-    ]
-    if cookie_file:
-        command += ["--cookies", str(cookie_file)]
-    command.append(url)
-    result = subprocess.run(
-        command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
-    )
-    for line in reversed((result.stdout or "").splitlines()):
-        username, separator, owner_id = line.strip().partition("\t")
-        if separator and username and owner_id.isdigit():
-            return username, owner_id
-    detail = (result.stderr or result.stdout or "Instagram 계정 정보를 확인하지 못했습니다.")[-1500:]
-    raise HTTPException(status_code=400, detail=f"Instagram URL 확인 실패: {detail}")
-
-def resolve_youtube_identity(url):
-    try:
-        import yt_dlp
-    except ImportError:
-        raise HTTPException(status_code=500, detail="yt-dlp이 설치되어 있지 않습니다.")
-    options = {
-        "extract_flat": "in_playlist",
-        "playlistend": 1,
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 30,
-    }
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as exc:
-        message = str(exc).replace("ERROR: ", "").strip()
-        raise HTTPException(status_code=400, detail=f"YouTube URL 확인 실패: {message[-1500:]}")
-    first = next(iter(info.get("entries") or ()), {}) or {}
-    channel = (
-        info.get("channel") or info.get("uploader") or info.get("title")
-        or first.get("channel") or first.get("uploader") or "youtube"
-    )
-    return safe_download_component(channel, "youtube")
 
 MEDIA_DOWNLOAD_PERIOD_DAYS = {
     "today": 0,
@@ -291,6 +198,7 @@ def resolve_instagram_identity(url, cookie_file):
     command.append(url)
     result = subprocess.run(
         command, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
+        creationflags=NO_WINDOW,
     )
     for line in reversed((result.stdout or "").splitlines()):
         username, separator, owner_id = line.strip().partition("\t")
@@ -354,6 +262,7 @@ def run_gallery_media_download(url, job_dir, cookie_file, cutoff=None, progress_
     process = subprocess.Popen(
         command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, encoding="utf-8", errors="replace",
+        creationflags=NO_WINDOW,
     )
     output_lines = []
     output_queue = queue.Queue()
@@ -627,50 +536,6 @@ def validate_youtube_url(value):
         raise HTTPException(status_code=400, detail="Enter a valid YouTube video URL.")
     return value.strip()
 
-def download_youtube_media(url, job_dir):
-    try:
-        import yt_dlp
-    except ImportError:
-        raise HTTPException(status_code=500, detail="yt-dlp is not installed. Run pip install yt-dlp.")
-
-    ffmpeg_path = find_media_tool("ffmpeg")
-    options = {
-        "format": "bv*+ba/b",
-        "merge_output_format": "mp4",
-        "outtmpl": str(job_dir / "%(id)s.%(ext)s"),
-        "noplaylist": True,
-        "restrictfilenames": True,
-        "quiet": True,
-        "no_warnings": True,
-        "socket_timeout": 30,
-        "max_filesize": 2 * 1024 * 1024 * 1024,
-    }
-    if ffmpeg_path:
-        options["ffmpeg_location"] = str(Path(ffmpeg_path).parent)
-
-    try:
-        with yt_dlp.YoutubeDL(options) as downloader:
-            info = downloader.extract_info(url, download=True)
-            requested = info.get("requested_downloads") or []
-            candidates = [entry.get("filepath") for entry in requested if entry.get("filepath")]
-            candidates.append(downloader.prepare_filename(info))
-    except yt_dlp.utils.DownloadError as exc:
-        message = str(exc).replace("ERROR: ", "").strip()
-        raise HTTPException(status_code=400, detail=f"YouTube download failed: {message[-1500:]}")
-
-    for candidate in candidates:
-        if candidate and Path(candidate).is_file():
-            output = Path(candidate)
-            break
-    else:
-        files = [path for path in job_dir.iterdir() if path.is_file() and not path.name.endswith((".part", ".ytdl"))]
-        if not files:
-            raise HTTPException(status_code=500, detail="The downloaded YouTube media file was not found.")
-        output = max(files, key=lambda path: path.stat().st_mtime)
-
-    video_id = "".join(ch for ch in str(info.get("id") or "video") if ch.isalnum() or ch in "_-")[:48] or "video"
-    return output, f"youtube_{video_id}{output.suffix.lower()}"
-
 def safe_media_filename(filename):
     name = Path(filename or "upload.bin").name
     stem = "".join(ch if ch.isalnum() or ch in "._- " else "_" for ch in Path(name).stem).strip() or "media"
@@ -681,7 +546,7 @@ def safe_media_filename(filename):
 
 def run_media_command(args):
     logger.info("[media] ffmpeg command: %s", " ".join(str(a) for a in args))
-    result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    result = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "FFmpeg failed").strip()
         raise HTTPException(status_code=500, detail=message[-3000:])
@@ -722,6 +587,7 @@ def run_voice_isolation(ffmpeg_path, source, clip, output, mode, audio_codec):
                 probe = subprocess.run(
                     [ffprobe_path, "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(source)],
                     capture_output=True, text=True, encoding="utf-8", errors="replace",
+                    creationflags=NO_WINDOW,
                 )
                 try:
                     clip_duration = max(float(probe.stdout.strip()) - clip["start"], 0.01) if probe.returncode == 0 else None
@@ -765,6 +631,7 @@ def run_voice_isolation(ffmpeg_path, source, clip, output, mode, audio_codec):
             errors="replace",
             env=env,
             timeout=7200,
+            creationflags=NO_WINDOW,
         )
         combined_log = "\n".join(part for part in (result.stdout, result.stderr) if part)
         if result.returncode != 0:
@@ -1016,7 +883,7 @@ def get_media_ffmpeg_status():
     version = None
     if ffmpeg_path:
         try:
-            result = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, encoding="utf-8", errors="replace")
+            result = subprocess.run([ffmpeg_path, "-version"], capture_output=True, text=True, encoding="utf-8", errors="replace", creationflags=NO_WINDOW)
             version = (result.stdout or "").splitlines()[0] if result.stdout else None
         except Exception as e:
             version = str(e)
@@ -1116,6 +983,7 @@ async def probe_media(file: UploadFile = File(...)):
         text=True,
         encoding="utf-8",
         errors="replace",
+        creationflags=NO_WINDOW,
     )
     if result.returncode != 0:
         raise HTTPException(status_code=400, detail=(result.stderr or "Unable to inspect media.").strip())

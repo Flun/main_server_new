@@ -711,16 +711,27 @@ def installed_models(root: str = "", query: str = ""):
     selected = _assert_model_path(root or roots[0]["path"])
     needle = query.strip().lower()
     files = []
-    try:
-        for path in selected.rglob("*"):
-            if not path.is_file() or path.name.endswith(".part") or ".cache" in path.parts:
+    # 접근할 수 없는 링크 하나 때문에 모델 루트 전체 조회가 실패하지 않도록
+    # 링크를 따라가지 않고 항목별 오류만 건너뜁니다. Windows의 권한 없는
+    # symlink/reparse point와 Linux의 깨진 symlink에 모두 동일하게 적용됩니다.
+    for current, directories, names in os.walk(selected, followlinks=False):
+        directories[:] = [
+            name for name in directories
+            if name != ".cache" and not os.path.islink(os.path.join(current, name))
+        ]
+        for name in names:
+            path = Path(current) / name
+            if name.endswith(".part"):
                 continue
             if path.suffix.lower() not in PRIMARY_MODEL_EXTENSIONS:
                 continue
-            relative = str(path.relative_to(selected))
-            if needle and needle not in relative.lower():
+            try:
+                relative = str(path.relative_to(selected))
+                if needle and needle not in relative.lower():
+                    continue
+                stat = path.stat()
+            except OSError:
                 continue
-            stat = path.stat()
             files.append({
                 "name": path.name, "relative": relative, "path": str(path),
                 "size": stat.st_size, "mtime": int(stat.st_mtime),
@@ -728,7 +739,7 @@ def installed_models(root: str = "", query: str = ""):
             })
             if len(files) >= MAX_INSTALLED_FILES:
                 break
-    except OSError as error:
-        raise HTTPException(400, f"모델 폴더를 읽지 못했습니다: {error}") from error
+        if len(files) >= MAX_INSTALLED_FILES:
+            break
     files.sort(key=lambda item: item["mtime"], reverse=True)
     return {"root": str(selected), "files": files, "truncated": len(files) >= MAX_INSTALLED_FILES}

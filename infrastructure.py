@@ -18,24 +18,37 @@ from pathlib import Path
 from typing import Any
 
 import requests
+import psutil
 from fastapi import APIRouter, HTTPException
 
 from config import BASE_DIR, DEFAULTS, settings
+import nas_mount
 from process_mgr import Service, tail
 
 
 router = APIRouter(prefix="/api/infrastructure", tags=["infrastructure"])
 vllm_service = Service("vllm")
 
-INFRA_SETTINGS_FILE = Path(BASE_DIR) / "infrastructure_settings.json"
+# Keep Windows paths separate from the Linux deployment settings. A shared
+# checkout otherwise turns /home/... into unusable Windows paths (and vice versa).
+INFRA_SETTINGS_FILE = Path(BASE_DIR) / (
+    "infrastructure_windows_settings.json" if os.name == "nt" else "infrastructure_settings.json"
+)
 INFRA_LOG_FILE = Path(BASE_DIR) / "logs" / "infrastructure_install.log"
-LLAMA_SETTINGS_FILE = Path(BASE_DIR) / "llama_settings.json"
+LLAMA_SETTINGS_FILE = Path(BASE_DIR) / (
+    "llama_windows_settings.json" if os.name == "nt" else "llama_settings.json"
+)
+LEGACY_LLAMA_SETTINGS_FILE = Path(BASE_DIR) / "llama_settings.json"
 
 MODEL_ID = "sakamakismile/Qwen3.8-27B-MTP-NVFP4"
 DFLASH_MODEL_ID = "incoai/Qwen3.8-27B-DFlash2"
 MODEL_REVISION = "a0b936f0bbcb362c38d39840602c8d7b2476a9fc"
 VLLM_COMPAT_VERSION = "0.22.0"
 DFLASH_VLLM_SPEC = "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/52816/head"
+COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
+SAGEATTENTION_VERSION = "2.2.0"
+SAGEATTENTION_WINDOWS_REPO = "woct0rdho/SageAttention"
+CMPUNLOCKER_REPO = "https://github.com/lesj0610/cmpunlocker.git"
 
 INSTALL_STATE: dict[str, Any] = {
     "busy": False,
@@ -46,6 +59,7 @@ INSTALL_STATE: dict[str, Any] = {
     "ok": None,
 }
 INSTALL_LOCK = threading.Lock()
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 
 def _read_json(path: Path, default: Any) -> Any:
@@ -64,14 +78,24 @@ def _write_json(path: Path, value: Any) -> None:
     os.replace(temporary, path)
 
 
+def _safe_exists(path: Path) -> bool:
+    """Windows에서 권한(개발자 모드 등)이 없어 symlink를 따르지 못하면 False로 취급합니다."""
+    try:
+        return path.exists()
+    except OSError:
+        return False
+
+
 def _current_model_root() -> str:
     llama = _read_json(LLAMA_SETTINGS_FILE, {})
+    if os.name == "nt" and not llama:
+        llama = _read_json(LEGACY_LLAMA_SETTINGS_FILE, {})
     return str(llama.get("model_root") or settings.get("model_root"))
 
 
 def _default_model_path(model_root: str) -> str:
     alias = Path(model_root) / "vllm" / "Qwen3.8-27B-MTP-NVFP4"
-    if alias.exists():
+    if _safe_exists(alias):
         return str(alias)
     snapshot = (
         Path(model_root)
@@ -80,7 +104,7 @@ def _default_model_path(model_root: str) -> str:
         / "snapshots"
         / MODEL_REVISION
     )
-    return str(snapshot) if snapshot.exists() else MODEL_ID
+    return str(snapshot) if _safe_exists(snapshot) else MODEL_ID
 
 
 def _venv_python(env_path: Path) -> Path:
@@ -96,6 +120,8 @@ def defaults() -> dict[str, Any]:
         "model_root": model_root,
         "comfyui_dir": str(settings.get("comfyui_dir")),
         "llama_install_root": str(settings.get("llama_install_root")),
+        "cmpunlocker_profile": "auto",
+        "cmpunlocker_profile_mode_version": 2,
         "vllm_env": str(settings.get("vllm_env") or DEFAULTS["vllm_env"]),
         "vllm_dflash_env": str(settings.get("vllm_dflash_env") or DEFAULTS["vllm_dflash_env"]),
         "vllm_model": _default_model_path(model_root),
@@ -118,6 +144,10 @@ def load_settings() -> dict[str, Any]:
     result = defaults()
     saved = _read_json(INFRA_SETTINGS_FILE, {})
     if isinstance(saved, dict):
+        # Older builds silently persisted 8gb as the default. Treat that legacy
+        # value as auto once so a 10GB card is never patched with the wrong layout.
+        if "cmpunlocker_profile_mode_version" not in saved:
+            saved = {**saved, "cmpunlocker_profile": "auto"}
         result.update({key: value for key, value in saved.items() if key in result})
     return result
 
@@ -167,16 +197,20 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
         raise HTTPException(400, "GPU 메모리 사용률은 0.1~1.0입니다")
     if merged.get("profile") not in {"mtp", "dflash"}:
         raise HTTPException(400, "profile은 mtp 또는 dflash여야 합니다")
+    if merged.get("cmpunlocker_profile") not in {"auto", "8gb", "10gb"}:
+        raise HTTPException(400, "CMP unlock profile은 auto, 8gb 또는 10gb여야 합니다")
     if not re.fullmatch(r"[0-9, ]*", str(merged.get("gpu_devices") or "")):
         raise HTTPException(400, "GPU 목록은 0,1 형식으로 입력하세요")
 
     _write_json(INFRA_SETTINGS_FILE, merged)
     comfy_dir = Path(merged["comfyui_dir"])
+    portable_python = comfy_dir.parent / "python_embeded" / "python.exe"
+    comfy_python = portable_python if os.name == "nt" and portable_python.is_file() else _venv_python(comfy_dir / "venv")
     settings.save({
         "server_root": merged["server_root"],
         "model_root": merged["model_root"],
         "comfyui_dir": merged["comfyui_dir"],
-        "comfyui_python": str(_venv_python(comfy_dir)),
+        "comfyui_python": str(comfy_python),
         "llama_install_root": merged["llama_install_root"],
         "llama_version_glob": str(Path(merged["llama_install_root"]) / ("llama-*" if os.name != "nt" else "llama*")),
         "vllm_env": merged["vllm_env"],
@@ -186,18 +220,22 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
     })
     llama = _read_json(LLAMA_SETTINGS_FILE, {})
     llama["model_root"] = merged["model_root"]
-    llama.setdefault("vram_cleanup_enabled", True)
     _write_json(LLAMA_SETTINGS_FILE, llama)
     return merged
 
 
 def _python_version(executable: Path) -> str | None:
+    return _package_version(executable, "vllm")
+
+
+def _package_version(executable: Path, package: str) -> str | None:
     if not executable.is_file():
         return None
+    script = "from importlib.metadata import version; print(version(" + repr(package) + "))"
     try:
         result = subprocess.run(
-            [str(executable), "-c", "from importlib.metadata import version; print(version('vllm'))"],
-            capture_output=True, text=True, timeout=30,
+            [str(executable), "-c", script], capture_output=True, text=True,
+            timeout=30, creationflags=NO_WINDOW,
         )
         return result.stdout.strip() if result.returncode == 0 else None
     except (OSError, subprocess.SubprocessError):
@@ -207,24 +245,26 @@ def _python_version(executable: Path) -> str | None:
 def _gpu_snapshot() -> list[dict[str, Any]]:
     command = [
         "nvidia-smi",
-        "--query-gpu=index,name,memory.total,compute_cap,driver_version",
+        "--query-gpu=index,name,pci.device_id,memory.total,compute_cap,driver_version",
         "--format=csv,noheader,nounits",
     ]
     try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=8)
+        result = subprocess.run(command, capture_output=True, text=True, timeout=8, creationflags=NO_WINDOW)
     except (OSError, subprocess.SubprocessError):
         return []
     gpus = []
     for line in result.stdout.splitlines():
         parts = [part.strip() for part in line.split(",")]
-        if len(parts) != 5:
+        if len(parts) != 6:
             continue
         try:
-            capability = float(parts[3])
+            capability = float(parts[4])
+            device_id = parts[2].lower().replace("0x", "")[:4]
             gpus.append({
-                "index": int(parts[0]), "name": parts[1], "memory_mb": int(parts[2]),
-                "compute_capability": capability, "driver": parts[4],
+                "index": int(parts[0]), "name": parts[1], "pci_device_id": device_id,
+                "memory_mb": int(parts[3]), "compute_capability": capability, "driver": parts[5],
                 "native_nvfp4": capability >= 12.0,
+                "cmp170hx": device_id in {"20c2", "2082"} or "cmp 170hx" in parts[1].lower(),
             })
         except ValueError:
             continue
@@ -233,8 +273,12 @@ def _gpu_snapshot() -> list[dict[str, Any]]:
 
 def _path_state(path: str) -> dict[str, Any]:
     target = Path(path)
-    state: dict[str, Any] = {"path": str(target), "exists": target.exists(), "is_dir": target.is_dir()}
-    if target.exists():
+    state: dict[str, Any] = {"path": str(target), "exists": _safe_exists(target), "is_dir": False}
+    if state["exists"]:
+        try:
+            state["is_dir"] = target.is_dir()
+        except OSError:
+            pass
         try:
             usage = shutil.disk_usage(target)
             state["free_gb"] = round(usage.free / 1024**3, 1)
@@ -243,13 +287,49 @@ def _path_state(path: str) -> dict[str, Any]:
     return state
 
 
+def _comfy_python_path(configured: dict[str, Any]) -> Path:
+    directory = Path(configured["comfyui_dir"])
+    portable = directory.parent / "python_embeded" / "python.exe"
+    if os.name == "nt" and portable.is_file():
+        return portable
+    return _venv_python(directory / "venv")
+
+
+def _cmpunlocker_state(configured: dict[str, Any]) -> dict[str, Any]:
+    directory = Path(configured["server_root"]) / "tools" / "cmpunlocker"
+    if os.name == "nt":
+        return {
+            "available": False, "installed": False, "directory": str(directory),
+            "repository": CMPUNLOCKER_REPO, "reason": "Linux x86-64 전용",
+        }
+    kernel = os.uname().release
+    module_dir = Path("/lib/modules") / kernel / "updates" / "cmpunlocker"
+    gpus = _gpu_snapshot()
+    driver_ok = any(str(gpu.get("driver", "")).startswith(("610.43.02", "610.43.03")) for gpu in gpus)
+    return {
+        "available": True,
+        "installed": module_dir.is_dir(),
+        "checkout": (directory / ".git").is_dir(),
+        "directory": str(directory),
+        "repository": CMPUNLOCKER_REPO,
+        "profile": configured.get("cmpunlocker_profile", "auto"),
+        "cmp_gpu_found": any(gpu.get("cmp170hx") for gpu in gpus),
+        "driver_supported": driver_ok,
+        "kernel_headers": (Path("/lib/modules") / kernel / "build").exists(),
+        "module_directory": str(module_dir),
+        "cold_reboot_required": True,
+    }
+
+
 def runtime_status() -> dict[str, Any]:
     configured = load_settings()
     stable_version = _python_version(_venv_python(Path(configured["vllm_env"])))
     dflash_version = _python_version(_venv_python(Path(configured["vllm_dflash_env"])))
+    comfy_python = _comfy_python_path(configured)
+    sage_version = _package_version(comfy_python, "sageattention")
     model = configured["vllm_model"]
     model_local = os.path.isabs(model)
-    model_ok = Path(model).is_dir() if model_local else True
+    model_ok = _safe_exists(Path(model)) if model_local else True
     gpus = _gpu_snapshot()
     selected = {
         int(value) for value in str(configured.get("gpu_devices") or "0").split(",")
@@ -257,9 +337,13 @@ def runtime_status() -> dict[str, Any]:
     }
     selected_gpus = [gpu for gpu in gpus if gpu["index"] in selected]
     native_nvfp4 = bool(selected_gpus) and all(gpu["native_nvfp4"] for gpu in selected_gpus)
+    cmp170hx = bool(selected_gpus) and all(gpu["cmp170hx"] for gpu in selected_gpus)
+    accelerator_ready = native_nvfp4 or cmp170hx
     warnings = []
-    if not native_nvfp4:
-        warnings.append("선택 GPU는 native NVFP4(SM 12.x)가 아닙니다. CMP 170HX 장착 후 다시 점검하세요.")
+    if cmp170hx and not native_nvfp4:
+        warnings.append("CMP 170HX가 감지되어 native NVFP4 검증을 건너뛰고 실행을 허용합니다.")
+    elif not accelerator_ready:
+        warnings.append("선택 GPU가 native NVFP4 GPU 또는 CMP 170HX로 확인되지 않았습니다.")
     if not model_ok:
         warnings.append(f"로컬 모델 폴더가 없습니다: {model}")
     if configured["profile"] == "dflash" and not dflash_version:
@@ -268,12 +352,22 @@ def runtime_status() -> dict[str, Any]:
         warnings.append("vLLM 안정 환경이 설치되지 않았습니다.")
     return {
         "settings": configured,
+        "nas": nas_mount.status(),
         "service": vllm_service.info(),
         "stable": {"installed": bool(stable_version), "version": stable_version, "compatible": stable_version == VLLM_COMPAT_VERSION},
         "dflash": {"installed": bool(dflash_version), "version": dflash_version, "experimental": True},
+        "comfyui": {
+            "python": str(comfy_python), "installed": Path(configured["comfyui_dir"], "main.py").is_file(),
+            "sageattention_version": sage_version,
+            "sageattention_ready": bool(sage_version and sage_version.startswith(SAGEATTENTION_VERSION)),
+        },
         "model": {"value": model, "local": model_local, "available": model_ok, "id": MODEL_ID},
         "gpus": gpus,
-        "native_nvfp4_ready": native_nvfp4 and model_ok,
+        "native_nvfp4_ready": accelerator_ready and model_ok,
+        "native_nvfp4_verified": native_nvfp4,
+        "cmp170hx_ready": cmp170hx,
+        "platform": "windows" if os.name == "nt" else "linux",
+        "cmpunlocker": _cmpunlocker_state(configured),
         "warnings": warnings,
         "paths": {
             key: _path_state(configured[key]) for key in (
@@ -296,11 +390,14 @@ def _install_log(message: str) -> None:
     INSTALL_STATE["message"] = message
 
 
-def _run_logged(command: list[str], *, cwd: str | None = None) -> None:
+def _run_logged(command: list[str], *, cwd: str | None = None, env: dict[str, str] | None = None) -> None:
     safe_command = " ".join(command)
     _install_log(f"실행: {safe_command}")
     with INFRA_LOG_FILE.open("a", encoding="utf-8") as log_stream:
-        subprocess.run(command, cwd=cwd, stdout=log_stream, stderr=subprocess.STDOUT, check=True)
+        subprocess.run(
+            command, cwd=cwd, env=env, stdout=log_stream, stderr=subprocess.STDOUT,
+            check=True, creationflags=NO_WINDOW,
+        )
 
 
 def _ensure_venv(path: str) -> Path:
@@ -311,6 +408,99 @@ def _ensure_venv(path: str) -> Path:
         base_python = sys.executable or (shutil.which("python") or shutil.which("python3") or "python3")
         _run_logged([base_python, "-m", "venv", str(env_path)])
     return python
+
+
+def _comfy_running(directory: Path) -> bool:
+    target = str(directory.resolve()).lower()
+    for process in psutil.process_iter(["cmdline", "cwd"]):
+        try:
+            command = " ".join(process.info.get("cmdline") or []).lower()
+            cwd = str(process.info.get("cwd") or "").lower()
+            if "main.py" in command and (target in command or cwd == target):
+                return True
+        except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
+            continue
+    return False
+
+
+def _python_torch_info(python: Path) -> dict[str, Any]:
+    script = (
+        "import json,sys,torch; "
+        "print(json.dumps({'python':list(sys.version_info[:3]),'torch':torch.__version__.split('+')[0],"
+        "'cuda':torch.version.cuda,'cuda_available':torch.cuda.is_available()}))"
+    )
+    result = subprocess.run(
+        [str(python), "-c", script], capture_output=True, text=True,
+        timeout=60, creationflags=NO_WINDOW,
+    )
+    if result.returncode:
+        raise RuntimeError("ComfyUI 환경에서 PyTorch를 불러오지 못했습니다: " + (result.stderr.strip() or result.stdout.strip()))
+    return json.loads(result.stdout.strip())
+
+
+def _sage_wheel_compatible(name: str, torch_parts: tuple[int, int, int]) -> bool:
+    match = re.search(r"torch(\d+)\.(\d+)\.(\d+)(andhigher)?", name.lower())
+    if not match:
+        return False
+    wheel_torch = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
+    return torch_parts == wheel_torch or (bool(match.group(4)) and torch_parts >= wheel_torch)
+
+
+def _install_sageattention(python: Path) -> None:
+    info = _python_torch_info(python)
+    if not info.get("cuda_available"):
+        raise RuntimeError("ComfyUI PyTorch에서 CUDA GPU를 사용할 수 없어 SageAttention 설치를 중단합니다")
+    if os.name == "nt":
+        cuda = str(info.get("cuda") or "")
+        cuda_key = "cu" + "".join(cuda.split(".")[:2]) if re.fullmatch(r"\d+\.\d+", cuda) else ""
+        torch_parts = tuple(int(x) for x in re.findall(r"\d+", str(info.get("torch") or ""))[:3])
+        if not cuda_key or len(torch_parts) != 3:
+            raise RuntimeError(
+                f"Windows CUDA/PyTorch 버전을 판별할 수 없습니다: torch {info.get('torch')} / CUDA {cuda}"
+            )
+        _run_logged([str(python), "-m", "pip", "install", "--upgrade", "triton-windows"])
+        response = requests.get(
+            f"https://api.github.com/repos/{SAGEATTENTION_WINDOWS_REPO}/releases?per_page=10", timeout=30
+        )
+        response.raise_for_status()
+        assets = [
+            asset for release in response.json()
+            if str(release.get("tag_name", "")).startswith("v2.2.0-windows")
+            for asset in release.get("assets", [])
+            if cuda_key in asset.get("name", "").lower()
+            and asset.get("name", "").lower().endswith("win_amd64.whl")
+        ]
+        def compatible(asset: dict[str, Any]) -> bool:
+            return _sage_wheel_compatible(asset.get("name", ""), torch_parts)
+        asset = next((candidate for candidate in assets if compatible(candidate)), None)
+        if not asset:
+            raise RuntimeError(f"torch {info.get('torch')} / CUDA {cuda}용 SageAttention 2.2.0 Windows wheel이 없습니다")
+        _run_logged([str(python), "-m", "pip", "install", "--upgrade", asset["browser_download_url"]])
+    else:
+        nvcc = shutil.which("nvcc")
+        if not nvcc:
+            raise RuntimeError("SageAttention 2.2.0 빌드에 필요한 CUDA Toolkit(nvcc)이 없습니다")
+        build_env = dict(os.environ)
+        build_env.setdefault("CUDA_HOME", str(Path(nvcc).resolve().parent.parent))
+        build_env.setdefault("EXT_PARALLEL", "4")
+        build_env.setdefault("MAX_JOBS", str(min(os.cpu_count() or 4, 32)))
+        build_env.setdefault("NVCC_APPEND_FLAGS", "--threads 8")
+        arches = sorted({
+            f"{float(gpu['compute_capability']):.1f}" for gpu in _gpu_snapshot()
+            if float(gpu["compute_capability"]) >= 8.0
+        })
+        if arches:
+            build_env["TORCH_CUDA_ARCH_LIST"] = ";".join(arches)
+        _run_logged([str(python), "-m", "pip", "install", "--upgrade", "ninja", "packaging", "wheel", "setuptools"])
+        _run_logged(
+            [str(python), "-m", "pip", "install", "--upgrade", f"sageattention=={SAGEATTENTION_VERSION}", "--no-build-isolation"],
+            env=build_env,
+        )
+    _run_logged([
+        str(python), "-c",
+        "from importlib.metadata import version; from sageattention import sageattn; "
+        "v=version('sageattention'); assert v.startswith('2.2.0'), v; print('SageAttention',v,'import OK')",
+    ])
 
 
 def _install_worker(target: str) -> None:
@@ -334,10 +524,56 @@ def _install_worker(target: str) -> None:
                 raise RuntimeError(f"비어 있지 않은 비-git 폴더입니다: {directory}")
             else:
                 directory.parent.mkdir(parents=True, exist_ok=True)
-                _run_logged(["git", "clone", "https://github.com/comfyanonymous/ComfyUI.git", str(directory)])
-            python = _ensure_venv(str(directory / "venv"))
+                _run_logged(["git", "clone", COMFYUI_REPO, str(directory)])
+            portable_python = directory.parent / "python_embeded" / "python.exe"
+            python = portable_python if os.name == "nt" and portable_python.is_file() else _ensure_venv(str(directory / "venv"))
             _run_logged([str(python), "-m", "pip", "install", "--upgrade", "pip"])
             _run_logged([str(python), "-m", "pip", "install", "-r", str(directory / "requirements.txt")])
+            _install_sageattention(python)
+        elif target.startswith("cmpunlocker-"):
+            if os.name == "nt":
+                raise RuntimeError("cmpunlocker는 Linux x86-64 전용입니다")
+            profile = target.removeprefix("cmpunlocker-")
+            if profile not in {"auto", "8gb", "10gb"}:
+                raise RuntimeError("CMP unlock profile은 auto, 8gb 또는 10gb여야 합니다")
+            unlock_state = _cmpunlocker_state(configured)
+            missing = []
+            if not unlock_state.get("cmp_gpu_found"):
+                missing.append("CMP 170HX")
+            if not unlock_state.get("driver_supported"):
+                missing.append("nvidia-open 610.43.02/03")
+            if not unlock_state.get("kernel_headers"):
+                missing.append("현재 커널 headers")
+            if missing:
+                raise RuntimeError("CMP unlocker 사전 조건 미충족: " + ", ".join(missing))
+            directory = Path(configured["server_root"]) / "tools" / "cmpunlocker"
+            if (directory / ".git").is_dir():
+                _run_logged(["git", "pull", "--ff-only"], cwd=str(directory))
+            elif directory.exists() and any(directory.iterdir()):
+                raise RuntimeError(f"비어 있지 않은 비-git 폴더입니다: {directory}")
+            else:
+                directory.parent.mkdir(parents=True, exist_ok=True)
+                _run_logged(["git", "clone", CMPUNLOCKER_REPO, str(directory)])
+            script = directory / "install.sh"
+            if not script.is_file():
+                raise RuntimeError(f"CMP unlocker 설치 스크립트가 없습니다: {script}")
+            install_command = ["bash", str(script)]
+            if profile != "auto":
+                install_command.append(f"--profile={profile}")
+            if os.geteuid() != 0:
+                sudo_check = subprocess.run(
+                    ["sudo", "-n", "true"], capture_output=True, text=True,
+                    timeout=10, creationflags=NO_WINDOW,
+                )
+                if sudo_check.returncode:
+                    manual = "sudo bash install.sh" + (f" --profile={profile}" if profile != "auto" else "")
+                    raise RuntimeError(
+                        "관리자 권한이 필요하지만 비대화형 sudo가 허용되지 않았습니다. "
+                        f"터미널에서 {directory} 폴더로 이동해 `{manual}`을 실행하세요"
+                    )
+                install_command = ["sudo", "-n", *install_command]
+            _run_logged(install_command, cwd=str(directory))
+            _install_log("cmpunlocker 설치 완료 — 반드시 완전 종료 후 전원을 차단했다가 다시 부팅하세요")
         else:
             raise RuntimeError(f"지원하지 않는 설치 대상: {target}")
         _install_log("완료")
@@ -416,11 +652,88 @@ def infrastructure_settings_save(values: dict[str, Any]):
     return {"ok": True, "settings": saved, "status": runtime_status()}
 
 
+@router.get("/nas")
+def infrastructure_nas_get():
+    return nas_mount.status()
+
+
+@router.post("/nas/settings")
+def infrastructure_nas_settings_save(values: dict[str, Any]):
+    try:
+        username = str(values.get("username") or "").strip()
+        password = str(values.get("password") or "")
+        current = nas_mount.status()
+        if not password and username and current["credentials_saved"] and username != current["credentials_username"]:
+            raise nas_mount.MountError("NAS 계정을 변경하려면 암호도 다시 입력하세요")
+        if not password and username and not current["credentials_saved"]:
+            raise nas_mount.MountError("NAS 암호도 함께 입력하세요")
+        configured = nas_mount.save_settings(values)
+        if password:
+            nas_mount.save_credentials(username, password)
+        return {"ok": True, "settings": configured, "nas": nas_mount.status()}
+    except nas_mount.MountError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post("/nas/mount")
+def infrastructure_nas_mount():
+    try:
+        return {"ok": True, "nas": nas_mount.mount()}
+    except nas_mount.MountError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post("/nas/unmount")
+def infrastructure_nas_unmount():
+    try:
+        return {"ok": True, "nas": nas_mount.unmount()}
+    except nas_mount.MountError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.delete("/nas/credentials")
+def infrastructure_nas_credentials_delete():
+    nas_mount.delete_credentials()
+    return {"ok": True, "nas": nas_mount.status()}
+
+
+@router.post("/nas/open/{target}")
+def infrastructure_nas_open(target: str):
+    snapshot = nas_mount.status()
+    targets = {
+        "main": (snapshot["main_local"], snapshot["main_mounted"]),
+        "comfyui": (snapshot["comfyui_local"], snapshot["comfyui_mounted"]),
+    }
+    if target not in targets:
+        raise HTTPException(404, "알 수 없는 NAS 폴더입니다")
+    path, mounted = targets[target]
+    if not mounted:
+        raise HTTPException(409, "NAS가 아직 마운트되지 않았습니다")
+    try:
+        if os.name == "nt":
+            os.startfile(path)
+        else:
+            subprocess.Popen(
+                ["xdg-open", path], start_new_session=True,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+    except OSError as error:
+        raise HTTPException(500, f"파일 탐색기를 열지 못했습니다: {error}") from error
+    return {"ok": True, "path": path}
+
+
 @router.post("/install/{target}")
 def infrastructure_install(target: str):
-    allowed = {"vllm-compatible", "vllm-latest", "vllm-dflash", "comfyui"}
+    allowed = {
+        "vllm-compatible", "vllm-latest", "vllm-dflash", "comfyui",
+        "cmpunlocker-auto", "cmpunlocker-8gb", "cmpunlocker-10gb",
+    }
     if target not in allowed:
         raise HTTPException(404, f"알 수 없는 설치 대상: {target}")
+    if target == "comfyui" and _comfy_running(Path(load_settings()["comfyui_dir"])):
+        raise HTTPException(409, "ComfyUI가 실행 중입니다. 중지한 뒤 설치/업데이트하세요")
+    if target.startswith("cmpunlocker-") and os.name == "nt":
+        raise HTTPException(400, "cmpunlocker 설치는 Linux x86-64에서만 지원합니다")
     with INSTALL_LOCK:
         if INSTALL_STATE["busy"]:
             raise HTTPException(409, f"이미 {INSTALL_STATE['target']} 작업이 진행 중입니다")
@@ -439,7 +752,7 @@ def infrastructure_vllm_start(values: dict[str, Any] | None = None):
     configured = save_settings(values) if values else load_settings()
     snapshot = runtime_status()
     if not snapshot["native_nvfp4_ready"]:
-        raise HTTPException(409, "native NVFP4 GPU와 로컬 모델 준비 상태를 먼저 확인하세요")
+        raise HTTPException(409, "선택 GPU(CMP 170HX 또는 native NVFP4)와 로컬 모델 준비 상태를 확인하세요")
     command, runtime_env = build_vllm_command(configured)
     devices = [item.strip() for item in str(configured["gpu_devices"]).split(",") if item.strip()]
     pid = vllm_service.start(command, env=runtime_env, device=devices or None)

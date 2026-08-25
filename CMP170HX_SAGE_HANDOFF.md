@@ -203,8 +203,7 @@ main.py --port 8188 --listen 0.0.0.0 --preview-method none --use-sage-attention 
 
 - main_server: 포트 `8999`
 - ComfyUI: 포트 `8188`, CMP 사용, SageAttention enabled
-- llama.cpp backend: 포트 `8082`, 3090 사용
-- llama VRAM guard/public: 포트 `8080`
+- llama.cpp: 포트 `8080`, 3090 사용
 
 ## 10. 다음 작업 권장 순서
 

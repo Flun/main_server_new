@@ -4,6 +4,7 @@ import subprocess
 import time
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 class Service:
     """한 서비스(ComfyUI / llama / bot / watcher) 프로세스 관리.
@@ -109,7 +110,7 @@ class Service:
         pid = self.pid
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=NO_WINDOW)
             else:
                 os.killpg(pid, signal.SIGTERM)
                 deadline = time.time() + 6
@@ -135,7 +136,7 @@ class Service:
         pid = self.pid
         try:
             if os.name == "nt":
-                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True)
+                subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], capture_output=True, creationflags=NO_WINDOW)
             else:
                 try:
                     os.killpg(pid, signal.SIGKILL)

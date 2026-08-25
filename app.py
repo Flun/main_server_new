@@ -19,7 +19,7 @@ import requests
 
 from config import BASE_DIR, IS_WINDOWS, settings
 from gpu import (
-    get_gpu_topology,
+    build_gpu_topology,
     get_gpus,
     parse_llama_offload,
     scan_vram_processes,
@@ -29,11 +29,17 @@ from media import router as media_router
 from dataset_api import router as dataset_router
 from vast_api import router as vast_router
 from process_mgr import Service, find_process, tail
-from llama_vram_guard import run_guard
 from infrastructure import router as infrastructure_router, vllm_service
+from motherboard_fan import (
+    controller as motherboard_fan_controller,
+    save_settings as save_motherboard_fan_settings,
+)
+import pawnio_bootstrap
+import cmp170_service
 
 HOST = "0.0.0.0"
 PORT = 8999
+NO_WINDOW = subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0
 
 PRESETS_FILE = os.path.join(BASE_DIR, "presets.json")
 MEMO_FILE = os.path.join(BASE_DIR, "memo.txt")
@@ -41,10 +47,12 @@ COMYFUI_SETTINGS_FILE = os.path.join(BASE_DIR, "comfyui_settings.json")
 HW_HISTORY_FILE = os.path.join(BASE_DIR, "hw_history.json")
 GPU_THERMAL_EVENTS_FILE = os.path.join(BASE_DIR, "gpu_thermal_events.json")
 LAST_RUN_FILE = os.path.join(BASE_DIR, "last_run.json")
-LLAMA_SETTINGS_FILE = os.path.join(BASE_DIR, "llama_settings.json")
+LLAMA_SETTINGS_FILE = os.path.join(
+    BASE_DIR, "llama_windows_settings.json" if IS_WINDOWS else "llama_settings.json"
+)
+LEGACY_LLAMA_SETTINGS_FILE = os.path.join(BASE_DIR, "llama_settings.json")
 SUNSHINE_MONITOR_SETTINGS_FILE = os.path.join(BASE_DIR, "sunshine_monitor_settings.json")
-LLAMA_PUBLIC_PORT = int(settings.get("llama_port") or 8080)
-LLAMA_BACKEND_PORT = 8082
+LLAMA_PORT = int(settings.get("llama_port") or 8080)
 
 services = {
     "comfyui": Service("comfyui"),
@@ -55,6 +63,8 @@ services = {
 }
 
 STARTED_AT = time.time()
+_catalog_scan_lock = threading.Lock()
+_catalog_scan_last = 0.0
 
 STATE = {
     "hw": {
@@ -212,6 +222,7 @@ def save_comfy_settings(data):
     merged = {
         "listen": True,
         "use_sage_attention": False,
+        "disable_cuda_malloc": False,
         "preview_method_none": True,
         "cache_none": False,
         "reserve_vram_enabled": True,
@@ -227,7 +238,7 @@ def save_comfy_settings(data):
         existing["reserve_vram"] = 1.0
     merged.update({k: existing[k] for k in merged if k in existing})
     for key in (
-        "listen", "use_sage_attention", "preview_method_none", "cache_none", "reserve_vram_enabled",
+        "listen", "use_sage_attention", "disable_cuda_malloc", "preview_method_none", "cache_none", "reserve_vram_enabled",
         "disable_async_offload", "fast_disk", "fast_fp16_accumulation",
     ):
         if key in data:
@@ -274,9 +285,10 @@ def normalize_model_root(value):
 
 def load_llama_settings():
     data = _read_json(LLAMA_SETTINGS_FILE, {})
+    if IS_WINDOWS and not data:
+        data = _read_json(LEGACY_LLAMA_SETTINGS_FILE, {})
     return {
         "model_root": normalize_model_root(data.get("model_root", settings.get("model_root"))),
-        "vram_cleanup_enabled": bool(data.get("vram_cleanup_enabled", True)),
     }
 
 
@@ -286,7 +298,6 @@ def save_llama_settings(values):
         raise HTTPException(400, f"Model root 폴더가 없습니다: {model_root}")
     saved = {
         "model_root": model_root,
-        "vram_cleanup_enabled": bool(values.get("vram_cleanup_enabled", True)),
     }
     _write_json(LLAMA_SETTINGS_FILE, saved)
     return saved
@@ -378,6 +389,20 @@ def scan_gguf_models(root=None):
     return models
 
 
+def _refresh_catalogs_if_stale(max_age_seconds=60):
+    """Avoid walking version/model directories on every dashboard status poll."""
+    global _catalog_scan_last
+    now = time.monotonic()
+    if now - _catalog_scan_last < max_age_seconds:
+        return
+    with _catalog_scan_lock:
+        if now - _catalog_scan_last < max_age_seconds:
+            return
+        scan_llama_versions()
+        scan_gguf_models()
+        _catalog_scan_last = now
+
+
 def _resolve_llama_binary(preset):
     version = (preset.get("version") or "").strip()
     if version and os.path.isdir(version):
@@ -391,6 +416,17 @@ def _resolve_llama_binary(preset):
     return None, None
 
 
+def _llama_port_value(preset):
+    port = str(preset.get("port", "")).strip() or "8080"
+    try:
+        value = int(port)
+    except ValueError as error:
+        raise HTTPException(400, "port는 정수여야 합니다") from error
+    if not 1 <= value <= 65535:
+        raise HTTPException(400, "port는 1~65535 사이여야 합니다")
+    return value
+
+
 def _build_llama_cmd(preset):
     exe, version_dir = _resolve_llama_binary(preset)
     if not exe:
@@ -398,10 +434,29 @@ def _build_llama_cmd(preset):
     model = preset.get("model", "")
     if not model or not os.path.isfile(model):
         raise HTTPException(400, f"모델 파일이 없습니다: {model}")
+    legacy = preset.get("optionalArgs") if isinstance(preset.get("optionalArgs"), dict) else {}
+
+    def value(key, default=""):
+        current = preset.get(key, legacy.get(key, default))
+        return str(current if current is not None else "").strip()
+
+    def enabled(key, default=False):
+        current = preset.get(key, legacy.get(key, default))
+        if isinstance(current, str):
+            return current.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(current)
+
     cmd = [exe, "-m", model]
     mmproj = preset.get("mmproj", "")
     if mmproj and os.path.isfile(mmproj):
         cmd += ["--mmproj", mmproj]
+    else:
+        # 이름이 비슷한 projector를 자동으로 집어 드는 동작을 막아 text/MTP
+        # 실행과 vision 실행을 명확히 구분합니다.
+        cmd += ["--no-mmproj-auto"]
+    alias = value("alias")
+    if alias:
+        cmd += ["--alias", alias]
     for flag, key in (
         ("--ctx-size", "ctx"),
         ("--host", "host"),
@@ -412,95 +467,87 @@ def _build_llama_cmd(preset):
         ("-ctk", "cacheK"),
         ("-ctv", "cacheV"),
     ):
-        v = str(preset.get(key, "")).strip()
+        v = value(key)
         if v:
             cmd += [flag, v]
-    sleep_idle = str(preset.get("sleepIdleSeconds", "")).strip()
-    if sleep_idle:
-        try:
-            sleep_idle_value = int(sleep_idle)
-        except ValueError as error:
-            raise HTTPException(400, "sleep-idle-seconds는 -1 이상의 정수여야 합니다") from error
-        if sleep_idle_value < -1:
-            raise HTTPException(400, "sleep-idle-seconds는 -1 이상의 정수여야 합니다")
-        cmd += ["--sleep-idle-seconds", str(sleep_idle_value)]
-    cmd += ["--port", str(LLAMA_BACKEND_PORT)]
+    cmd += ["--port", str(_llama_port_value(preset))]
     reasoning_mode = str(preset.get("reasoningMode", "")).strip()
     if reasoning_mode in {"on", "off"}:
         cmd += ["--reasoning", reasoning_mode]
     reasoning_budget = str(preset.get("reasoningBudget", "")).strip()
     if reasoning_mode != "off" and reasoning_budget:
         cmd += ["--reasoning-budget", reasoning_budget]
-    fit_target = str(preset.get("fitTarget", "")).strip()
-    # llama.cpp에는 --fit과 idle sleep을 함께 사용할 때 재기동 과정에서
-    # 이미 계산된 tensor override를 다시 적용하며 실패하는 알려진 문제가 있습니다.
-    # sleep을 선택한 경우 고정된 ctx/ngl 설정을 우선해 fit을 끕니다.
-    sleep_enabled = bool(sleep_idle) and int(sleep_idle) >= 0
-    if preset.get("fit") and not sleep_enabled:
+    fit_target = value("fitTarget")
+    if enabled("fit"):
         cmd += ["--fit", "on"]
         if fit_target:
             cmd += ["--fit-target", fit_target]
     else:
         # Current llama.cpp defaults --fit to on, so omission is not enough.
         cmd += ["--fit", "off"]
-    spec_type = str(preset.get("specType", "")).strip()
+    batch_size = value("batchSize")
+    ubatch_size = value("ubatchSize")
+    if batch_size and ubatch_size:
+        try:
+            if int(ubatch_size) > int(batch_size):
+                raise HTTPException(400, "ubatch size는 batch size보다 클 수 없습니다")
+        except ValueError:
+            raise HTTPException(400, "batch size와 ubatch size는 정수여야 합니다")
+    for flag, key in (
+        ("--batch-size", "batchSize"),
+        ("--ubatch-size", "ubatchSize"),
+        ("--threads-batch", "threadsBatch"),
+        ("--ctx-checkpoints", "ctxCheckpoints"),
+        ("--cache-ram", "cacheRam"),
+        ("--cache-reuse", "cacheReuse"),
+    ):
+        current = value(key)
+        if current:
+            cmd += [flag, current]
+
+    split_mode = value("splitMode")
+    if split_mode:
+        cmd += ["--split-mode", split_mode]
+    tensor_split = value("tensorSplit")
+    if tensor_split:
+        cmd += ["--tensor-split", tensor_split]
+    main_gpu = value("mainGpu")
+    if main_gpu:
+        cmd += ["--main-gpu", main_gpu]
+
+    cpu_moe = enabled("cpuMoe")
+    cpu_moe_layers = value("cpuMoeLayers")
+    if cpu_moe and cpu_moe_layers:
+        raise HTTPException(400, "--cpu-moe와 --n-cpu-moe는 동시에 사용할 수 없습니다")
+    if cpu_moe:
+        cmd.append("--cpu-moe")
+    elif cpu_moe_layers:
+        cmd += ["--n-cpu-moe", cpu_moe_layers]
+
+    spec_type = value("specType")
+    allowed_spec_types = {"draft-mtp", "draft-dflash", "draft-dspark", "draft-eagle3", "draft-simple"}
+    if spec_type and spec_type not in allowed_spec_types:
+        raise HTTPException(400, f"지원하지 않는 speculative type입니다: {spec_type}")
     if spec_type:
         cmd += ["--spec-type", spec_type]
-        for flag, key in (
-            ("--spec-draft-n-max", "specDraftNMax"),
-            ("--spec-draft-n-min", "specDraftNMin"),
-            ("--spec-draft-p-split", "specDraftPSplit"),
-            ("--spec-draft-p-min", "specDraftPMin"),
-            ("--spec-draft-ngl", "specDraftNgl"),
-            ("--spec-draft-device", "specDraftDevice"),
-        ):
-            v = str(preset.get(key, "")).strip()
-            if v:
-                cmd += [flag, v]
-    if preset.get("tempMode") == "general":
-        cmd += [
-            "--temp", "1.0", "--top-p", "0.95", "--top-k", "20",
-            "--min-p", "0.0", "--presence-penalty", "1.5", "--repeat-penalty", "1.0",
-        ]
-    elif preset.get("tempMode") == "coding":
-        cmd += [
-            "--temp", "0.6", "--top-p", "0.95", "--top-k", "20",
-            "--min-p", "0.0", "--presence-penalty", "0.0", "--repeat-penalty", "1.0",
-        ]
-    optional_definitions = {
-        "batchSize": ("--batch-size", False),
-        "ubatchSize": ("--ubatch-size", False),
-        "threadsBatch": ("--threads-batch", False),
-        "loadMode": ("--load-mode", False),
-        "splitMode": ("--split-mode", False),
-        "tensorSplit": ("--tensor-split", False),
-        "mainGpu": ("--main-gpu", False),
-        "cpuMoe": ("--cpu-moe", True),
-        "cpuMoeLayers": ("--n-cpu-moe", False),
-        "cacheSwa": ("--swa-full", True),
-        "cacheReuse": ("--cache-reuse", False),
-        "serverTimeout": ("--timeout", False),
-        "httpThreads": ("--threads-http", False),
-        "metrics": ("--metrics", True),
-        "noSlots": ("--no-slots", True),
-        "noWarmup": ("--no-warmup", True),
-    }
-    optional = preset.get("optionalArgs") or {}
-    if isinstance(optional, dict):
-        for key, value in optional.items():
-            definition = optional_definitions.get(key)
-            if not definition:
-                continue
-            flag, boolean_flag = definition
-            if boolean_flag:
-                if value:
-                    cmd.append(flag)
-            elif str(value).strip():
-                cmd += [flag, str(value).strip()]
-    if preset.get("flash"):
+        draft_n_max = value("specDraftNMax", "4")
+        if draft_n_max:
+            try:
+                if not 1 <= int(draft_n_max) <= 64:
+                    raise ValueError
+            except ValueError:
+                raise HTTPException(400, "spec draft N max는 1~64 정수여야 합니다")
+            cmd += ["--spec-draft-n-max", draft_n_max]
+        draft_model = value("specDraftModel")
+        if draft_model:
+            if not os.path.isfile(draft_model):
+                raise HTTPException(400, f"Draft 모델 파일이 없습니다: {draft_model}")
+            cmd += ["--spec-draft-model", draft_model]
+        draft_ngl = value("specDraftNgl")
+        if draft_ngl:
+            cmd += ["--spec-draft-ngl", draft_ngl]
+    if enabled("flash"):
         cmd += ["--flash-attn", "on"]
-    if preset.get("useTemplate"):
-        cmd += ["--jinja"]
     return cmd
 
 
@@ -543,6 +590,8 @@ def _comfy_args():
         args += ["--cache-none"]
     if s.get("use_sage_attention"):
         args += ["--use-sage-attention"]
+    if s.get("disable_cuda_malloc"):
+        args += ["--disable-cuda-malloc"]
     if s.get("reserve_vram_enabled"):
         args += ["--reserve-vram", str(s.get("reserve_vram", 1.0))]
     if s.get("disable_async_offload"):
@@ -570,8 +619,30 @@ def _run_dir_python(dir_path, script="main.py"):
 
 # ---------- 하드웨어 샘플러 ----------
 
+def _merge_lhm_gpu_temperatures(gpus):
+    """Fill consumer GPU memory-junction temperatures missing from NVML."""
+    if not IS_WINDOWS or not gpus:
+        return gpus
+    try:
+        sensors = motherboard_fan_controller.gpu_temperatures()
+    except Exception:
+        return gpus
+    unmatched = list(gpus)
+    for sensor in sensors:
+        name = str(sensor.get("name") or "").casefold()
+        gpu = next((item for item in unmatched if str(item.get("name") or "").casefold() == name), None)
+        if gpu is None:
+            continue
+        unmatched.remove(gpu)
+        if gpu.get("temp_memory") is None and sensor.get("memory_temperature") is not None:
+            gpu["temp_memory"] = round(float(sensor["memory_temperature"]))
+            gpu["temp_memory_source"] = "librehardwaremonitor"
+        if sensor.get("hotspot_temperature") is not None:
+            gpu["temp_hotspot"] = round(float(sensor["hotspot_temperature"]), 1)
+    return gpus
+
 def _sample_hw():
-    gpus = get_gpus()
+    gpus = _merge_lhm_gpu_temperatures(get_gpus())
     processes = scan_vram_processes()
     sampled_at = time.time()
     cpu = psutil.cpu_percent(interval=None)
@@ -585,6 +656,9 @@ def _sample_hw():
         "vram_procs": processes,
         "time": sampled_at,
     }
+    # The Windows fan helper uses the same already-sampled GPU values. This
+    # avoids a second NVML/nvidia-smi poll and refreshes its 15-second PWM lease.
+    motherboard_fan_controller.tick(gpus)
     _update_gpu_thermal_events(gpus, processes, sampled_at)
     STATE["history"].append(
         {
@@ -670,15 +744,6 @@ def infrastructure_page():
 
 # ---------- 상태 ----------
 
-def _pid_cmdline_has(pid, needle):
-    if not needle:
-        return True
-    try:
-        return needle in " ".join(psutil.Process(pid).cmdline())
-    except Exception:
-        return False
-
-
 def _pid_in_dir(pid, dir_path):
     """프로세스가 지정 폴더의 것이냐 — 절대 경로/상대 경로(portable)/cwd 모두 매칭.
 
@@ -734,8 +799,7 @@ def _service_state(name):
 
 @app.get("/api/status")
 def status():
-    scan_llama_versions()
-    scan_gguf_models()
+    _refresh_catalogs_if_stale()
     return {
         "platform": "linux" if not IS_WINDOWS else "windows",
         "is_windows": IS_WINDOWS,
@@ -746,14 +810,17 @@ def status():
         "llama_versions": STATE["llama_versions"],
         "gguf_models": STATE["gguf_models"],
         "settings": settings.all() if not IS_WINDOWS else {},
-        "llama_ports": {"public": LLAMA_PUBLIC_PORT, "backend": LLAMA_BACKEND_PORT},
+        "llama_port": LLAMA_PORT,
         "last_run": _read_json(LAST_RUN_FILE, {}),
     }
 
 
 @app.get("/api/gpus")
 def gpus():
-    topo = get_gpu_topology()
+    # The 5-second safety sampler already paid for NVML, nvidia-smi and process
+    # classification. Reuse that snapshot instead of polling the hardware again
+    # for every browser refresh.
+    topo = build_gpu_topology(STATE["hw"].get("gpus", []), STATE["hw"].get("vram_procs", []))
     processes = topo.get("processes", [])
     index_by_uuid = {gpu.get("uuid"): gpu.get("index") for gpu in topo.get("gpus", [])}
     def configured_devices(value):
@@ -805,9 +872,84 @@ def hardware():
     return STATE["hw"]
 
 
+@app.get("/api/cmp170/unlock")
+def cmp170_unlock_status():
+    return cmp170_service.status()
+
+
+@app.post("/api/cmp170/unlock")
+async def cmp170_unlock_action(request: Request):
+    data = await request.json()
+    try:
+        return cmp170_service.start(str(data.get("action") or ""))
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
 @app.get("/api/hardware/history")
 def hardware_history():
     return {"history": STATE["history"]}
+
+
+@app.get("/api/motherboard-fans")
+def motherboard_fans_get():
+    return motherboard_fan_controller.status(include_channels=True)
+
+
+@app.post("/api/motherboard-fans/config")
+def motherboard_fans_config(data: dict):
+    try:
+        normalized = save_motherboard_fan_settings(data)
+    except (KeyError, TypeError, ValueError) as error:
+        raise HTTPException(400, f"메인보드 팬 설정이 올바르지 않습니다: {error}") from error
+
+    if normalized.get("enabled") and normalized.get("fan_role") == "cmp170hx_hbm":
+        try:
+            snapshot = _gpu_tuning_snapshot()
+        except Exception as error:
+            normalized["enabled"] = False
+            save_motherboard_fan_settings(normalized)
+            raise HTTPException(400, f"CMP 170HX 식별에 실패해 팬 제어를 활성화하지 않았습니다: {error}") from error
+        selected = next((gpu for gpu in snapshot.get("gpus", []) if gpu.get("uuid") == normalized.get("gpu_uuid")), None)
+        if not selected or selected.get("profile") != "cmp_170hx":
+            normalized["enabled"] = False
+            save_motherboard_fan_settings(normalized)
+            raise HTTPException(400, "CMP 170HX 팬 역할에는 CMP 170HX로 식별된 GPU를 선택해야 합니다")
+
+    if not normalized.get("enabled") and not (normalized.get("cpu") or {}).get("enabled"):
+        try:
+            motherboard_fan_controller.reset()
+        except Exception:
+            pass
+    else:
+        motherboard_fan_controller.reconfigure()
+        motherboard_fan_controller.tick(STATE["hw"].get("gpus", []))
+    return motherboard_fan_controller.status(include_channels=True)
+
+
+@app.post("/api/motherboard-fans/action")
+def motherboard_fans_action(data: dict):
+    action = str(data.get("action") or "")
+    try:
+        if action == "reset":
+            result = motherboard_fan_controller.reset()
+        elif action == "manual_enter":
+            result = motherboard_fan_controller.enter_manual()
+        elif action == "manual_set":
+            result = motherboard_fan_controller.set_manual(
+                str(data.get("channel_id") or ""), int(data.get("percent", 60))
+            )
+        elif action == "manual_stop":
+            result = motherboard_fan_controller.exit_manual()
+            motherboard_fan_controller.tick(STATE["hw"].get("gpus", []))
+        elif action == "test":
+            result = motherboard_fan_controller.test(str(data.get("channel_id") or ""), int(data.get("percent", 70)))
+        else:
+            raise ValueError("지원하지 않는 팬 작업입니다")
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise HTTPException(400, str(error)) from error
+    result["status"] = motherboard_fan_controller.status(include_channels=True)
+    return result
 
 
 @app.get("/api/gpu/thermal-events")
@@ -847,59 +989,9 @@ def llama_presets_save(presets: dict):
     return {"ok": True, "presets": load_presets()}
 
 
-def _release_comfy_vram_before_llama_start():
-    """Apply the same cleanup policy before the initial llama model load.
-
-    The public guard protects wake-up inference, but llama-server also loads a
-    model once during process startup. That first load needs the same protection.
-    """
-    if not load_llama_settings().get("vram_cleanup_enabled"):
-        return {"comfy_online": None, "released": False}
-    comfy_url = f"http://127.0.0.1:{int(settings.get('comfyui_port') or 8188)}"
-    try:
-        response = requests.get(f"{comfy_url}/queue", timeout=3)
-        response.raise_for_status()
-    except requests.RequestException:
-        return {"comfy_online": False, "released": False}
-    while True:
-        try:
-            queue = response.json()
-        except ValueError as error:
-            raise HTTPException(503, "ComfyUI 큐 상태를 해석하지 못해 llama 시작을 중단했습니다") from error
-        if not (queue.get("queue_running") or []) and not (queue.get("queue_pending") or []):
-            break
-        time.sleep(2)
-        try:
-            response = requests.get(f"{comfy_url}/queue", timeout=5)
-            response.raise_for_status()
-        except requests.RequestException as error:
-            raise HTTPException(503, "ComfyUI 작업 대기 중 연결이 끊겨 llama 시작을 중단했습니다") from error
-    try:
-        released = requests.post(
-            f"{comfy_url}/free",
-            json={"unload_models": True, "free_memory": True},
-            timeout=30,
-        )
-        released.raise_for_status()
-    except requests.RequestException as error:
-        raise HTTPException(503, "ComfyUI VRAM 정리에 실패해 llama 시작을 중단했습니다") from error
-    return {"comfy_online": True, "released": True}
-
-
 @app.post("/api/llama/start")
 def llama_start(preset: dict):
     effective = dict(preset)
-    warnings = []
-    try:
-        sleep_enabled = int(str(effective.get("sleepIdleSeconds", "-1") or "-1")) >= 0
-    except ValueError:
-        sleep_enabled = False
-    if sleep_enabled and effective.get("fit"):
-        effective["fit"] = False
-        warnings.append("VRAM Auto-Unload와 --fit의 llama.cpp 재로딩 충돌을 피하기 위해 --fit을 자동으로 껐습니다.")
-    cleanup = _release_comfy_vram_before_llama_start()
-    if cleanup.get("released"):
-        warnings.append("llama 시작 전에 ComfyUI 모델과 캐시를 정리했습니다.")
     cmd = _build_llama_cmd(effective)
     devices = normalize_gpu_devices(effective.get("gpuDevices") or effective.get("device") or [])
     pid = services["llama"].start(cmd, device=devices or None)
@@ -911,10 +1003,9 @@ def llama_start(preset: dict):
         "ok": True,
         "pid": pid,
         "cmd": cmd,
-        "public_url": f"http://127.0.0.1:{LLAMA_PUBLIC_PORT}",
-        "backend_url": f"http://127.0.0.1:{LLAMA_BACKEND_PORT}",
+        "url": f"http://127.0.0.1:{_llama_port_value(effective)}",
         "gpu_devices": devices,
-        "warnings": warnings,
+        "warnings": [],
     }
 
 
@@ -936,28 +1027,6 @@ def llama_settings_get():
 @app.post("/api/llama/settings")
 def llama_settings_save(values: dict):
     return save_llama_settings(values)
-
-
-# ---------- llama.cpp VRAM 가드 ----------
-# 사람/웹 UI는 공개 포트 8080을 사용합니다. 가드는 ComfyUI 작업이 끝날
-# 때까지 기다린 뒤 VRAM을 비우고 내부 llama-server(8082)로 전달합니다.
-# ComfyUI 커스텀 노드는 8082를 직접 호출해 자기 자신을 기다리는 교착을 피합니다.
-
-
-def _run_guard_server():
-    try:
-        run_guard(
-            host="0.0.0.0",
-            port=LLAMA_PUBLIC_PORT,
-            backend_port=LLAMA_BACKEND_PORT,
-            comfy_port=int(settings.get("comfyui_port") or 8188),
-            settings_file=LLAMA_SETTINGS_FILE,
-        )
-    except Exception as error:
-        print(f"[llama vram guard] {LLAMA_PUBLIC_PORT} 서버 시작 실패: {error}")
-
-
-_guard_thread = None
 
 
 @app.get("/api/llama/scan")
@@ -995,6 +1064,8 @@ def llama_cleanup():
 
 
 LLAMA_GIT_REPO = "https://github.com/ggml-org/llama.cpp"
+GITHUB_API = "https://api.github.com/repos/ggml-org/llama.cpp"
+NIGHTLY_TAG_RE = re.compile(r"^b\d+$")
 
 LLAMA_BUILD_STATE = {
     "busy": False,
@@ -1004,24 +1075,105 @@ LLAMA_BUILD_STATE = {
 }
 
 
+def _win_cuda_zip_assets(release):
+    """릴리스에서 현재 아키텍처용 Windows CUDA 프리빌트 zip만 추린다 (url 포함).
+
+    cudart 번들(런타임 포함 대형)과 다른 아키텍처는 제외하고,
+    표준 정적 llama-* 빌드만 노출한다 → CUDA 버전별 깔끔한 선택지.
+    """
+    import platform
+    arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+    out = []
+    for a in release.get("assets", []) or []:
+        name = a.get("name", "")
+        n = name.lower()
+        if "win" not in n or "cuda" not in n or not n.endswith(".zip"):
+            continue
+        if arch not in n:
+            continue
+        if "cudart" in n:
+            continue
+        url = a.get("browser_download_url") or a.get("download_url") or ""
+        if url:
+            out.append({"name": name, "size": a.get("size", 0), "url": url})
+    return out
+
+
+def _driver_max_cuda():
+    """드라이버가 지원하는 최대 CUDA 버전 (nvidia-smi 헤더). 알 수 없으면 None."""
+    try:
+        out = subprocess.run(
+            ["nvidia-smi"], capture_output=True, text=True, timeout=10,
+            creationflags=(subprocess.CREATE_NO_WINDOW if IS_WINDOWS else 0),
+        ).stdout
+        m = re.search(r"CUDA Version:\s*(\d+)\.(\d+)", out)
+        if m:
+            return int(m.group(1)) * 100 + int(m.group(2))
+    except Exception:
+        pass
+    return None
+
+
 @app.get("/api/llama/releases")
 def llama_releases():
     try:
-        import requests
-
-        res = requests.get("https://api.github.com/repos/ggml-org/llama.cpp/releases/latest", timeout=15)
+        # stable(vX.Y.Z)과 nightly(bXXXX)를 API 호출 한 번에 모두 확인한다.
+        # 공식 레포의 stable 릴리스에는 바이너리가 없고, nightly에만
+        # Windows CUDA 프리빌트 zip이 딸려 온다 (stable의 nightly-tag.txt도
+        # 이 nightly 태그를 가리킨다). 따라서 "최신 CUDA 기반 빌드"는
+        # 최신 nightly가 곧 그것이다.
+        res = requests.get(f"{GITHUB_API}/releases?per_page=50", timeout=15)
         res.raise_for_status()
-        data = res.json()
+        rels = res.json()
+        stable = next(
+            (r for r in rels if not NIGHTLY_TAG_RE.fullmatch(r.get("tag_name", ""))), None
+        ) or {}
+        nightly = next(
+            (
+                r
+                for r in rels
+                if NIGHTLY_TAG_RE.fullmatch(r.get("tag_name", "")) and _win_cuda_zip_assets(r)
+            ),
+            None,
+        )
+
+        if IS_WINDOWS and nightly:
+            data = nightly  # Windows: CUDA 프리빌트가 있는 최신 빌드
+        else:
+            # GitHub의 첫 페이지가 전부 nightly인 시기에도 Linux에서 빈
+            # 버전을 반환하지 않는다. 모든 bNNNN 태그는 git 빌드 가능하다.
+            data = stable or (rels[0] if rels else {})
         tag = data.get("tag_name", "")
+        # 설치 여부: <root>/llama-<tag> 또는 <root>/llama-<tag>-cuda* 중 하나라도 있으면 True
+        root = settings.get("llama_install_root")
+        installed = os.path.isdir(os.path.join(root, f"llama-{tag}")) or bool(
+            glob.glob(os.path.join(root, f"llama-{tag}-cuda*"))
+        )
         return {
             "tag_name": tag,
+            "stable_tag": stable.get("tag_name", ""),
+            "nightly_tag": nightly.get("tag_name", "") if nightly else "",
             "published_at": data.get("published_at"),
             "html_url": data.get("html_url"),
             "platform": "linux" if not IS_WINDOWS else "windows",
             "git_url": LLAMA_GIT_REPO,
             "source_url": f"{LLAMA_GIT_REPO}/archive/refs/tags/{tag}.tar.gz",
-            "installed": os.path.isdir(os.path.join(settings.get("llama_install_root"), f"llama-{tag}")),
-            "assets": data.get("assets", []) if IS_WINDOWS else [],
+            "installed": installed,
+            "install_root": root,
+            "assets": _win_cuda_zip_assets(data) if IS_WINDOWS else [],
+            "releases": [
+                {
+                    "tag_name": release.get("tag_name", ""),
+                    "published_at": release.get("published_at"),
+                    "prerelease": bool(release.get("prerelease")),
+                    "nightly": bool(NIGHTLY_TAG_RE.fullmatch(release.get("tag_name", ""))),
+                    "assets": _win_cuda_zip_assets(release) if IS_WINDOWS else [],
+                    "installable": (not IS_WINDOWS) or bool(_win_cuda_zip_assets(release)),
+                }
+                for release in rels
+                if _safe_release_tag(release.get("tag_name", ""))
+            ],
+            "driver_max_cuda": _driver_max_cuda(),
             "build_state": LLAMA_BUILD_STATE,
         }
     except Exception as e:
@@ -1041,6 +1193,10 @@ def _safe_tag(tag):
     return tag
 
 
+def _safe_release_tag(tag):
+    return bool(re.fullmatch(r"[A-Za-z0-9._-]+", str(tag or "").strip()))
+
+
 def _build_llama_git(tag):
     """최신 llama.cpp를 git에서 클론해 CUDA로 빌드하고 /opt/llama-<tag> 에 설치한다."""
     LLAMA_BUILD_STATE.update(busy=True, tag=tag, message="시작", started_at=time.time())
@@ -1056,12 +1212,12 @@ def _build_llama_git(tag):
             _llama_install_log(f"git clone --depth 1 --branch {tag} {LLAMA_GIT_REPO}")
             subprocess.run(
                 ["git", "clone", "--depth", "1", "--branch", tag, LLAMA_GIT_REPO, src_dir],
-                check=True,
+                check=True, creationflags=NO_WINDOW,
             )
         else:
             _llama_install_log("소스 이미 존재, git fetch")
-            subprocess.run(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=src_dir, check=True)
-            subprocess.run(["git", "checkout", tag], cwd=src_dir, check=True)
+            subprocess.run(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=src_dir, check=True, creationflags=NO_WINDOW)
+            subprocess.run(["git", "checkout", tag], cwd=src_dir, check=True, creationflags=NO_WINDOW)
 
         build_dir = os.path.join(src_dir, "build")
         os.makedirs(build_dir, exist_ok=True)
@@ -1076,13 +1232,13 @@ def _build_llama_git(tag):
                 "-DGGML_CUDA_F16=ON",
                 "-DBUILD_SHARED_LIBS=OFF",
             ],
-            cwd=src_dir, check=True,
+            cwd=src_dir, check=True, creationflags=NO_WINDOW,
         )
 
         nproc = os.cpu_count() or 4
         _llama_install_log(f"cmake --build build -j{nproc}")
         LLAMA_BUILD_STATE["message"] = "CUDA 빌드 중"
-        subprocess.run(["cmake", "--build", "build", "-j", str(nproc)], cwd=src_dir, check=True)
+        subprocess.run(["cmake", "--build", "build", "-j", str(nproc)], cwd=src_dir, check=True, creationflags=NO_WINDOW)
 
         # 설치 위치: /opt/llama-<tag>/bin/llama-server 등
         install_dir = os.path.join(settings.get("llama_install_root"), f"llama-{tag}")
@@ -1106,54 +1262,336 @@ def _build_llama_git(tag):
         scan_llama_versions()
 
 
-def _fetch_release_assets(tag):
-    import requests
+def _find_vcvars():
+    """VS 2022/2019(Build Tools/Community 등) vcvars64.bat 탐색.
 
-    res = requests.get(
-        f"https://api.github.com/repos/ggml-org/llama.cpp/releases/tags/{tag}", timeout=20
+    반환: (vcvars64.bat 경로, CMake generator) 또는 (None, None)
+    """
+    roots = [
+        r"C:\Program Files\Microsoft Visual Studio",
+        r"C:\Program Files (x86)\Microsoft Visual Studio",
+    ]
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        for year, gen in (("2022", "Visual Studio 17 2022"), ("2019", "Visual Studio 16 2019")):
+            pat = os.path.join(root, year, "*", "VC", "Auxiliary", "Build", "vcvars64.bat")
+            for p in sorted(glob.glob(pat)):
+                if os.path.isfile(p):
+                    return p, gen
+    return None, None
+
+
+def _find_cuda_toolkit():
+    """nvcc가 있는 CUDA Toolkit 루트 반환 (PATH 우선, 없으면 Program Files 스캔).
+
+    반환: (toolkit 루트, '12.4' 같은 버전 문자열) 또는 (None, None)
+    """
+    nvcc = shutil.which("nvcc")
+    if nvcc:
+        root = os.path.dirname(os.path.dirname(os.path.abspath(nvcc)))
+        m = re.search(r"v(\d+)\.(\d+)", root)
+        ver = f"{m.group(1)}.{m.group(2)}" if m else ""
+        return root, ver
+    hits = sorted(
+        glob.glob(r"C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v*\bin\nvcc.exe"),
+        reverse=True,
     )
+    if hits:
+        root = os.path.dirname(os.path.dirname(hits[0]))
+        m = re.search(r"v(\d+)\.(\d+)", root)
+        ver = f"{m.group(1)}.{m.group(2)}" if m else ""
+        return root, ver
+    return None, None
+
+
+def _build_llama_git_windows(tag):
+    """git에서 tag를 클론해 MSVC + CUDA(GGML_CUDA=ON)로 빌드한다.
+
+    설치 위치: <root>/llama-<tag>-cuda<toolkit버전>  (C:\\llama\\llama-<tag>-cuda12.4 등)
+    빌드 도구가 없으면 설치 안내 메시지로 안전하게 실패한다.
+    """
+    LLAMA_BUILD_STATE.update(busy=True, tag=tag, message="시작", started_at=time.time())
+    stage_dir = None
+    try:
+        _llama_install_log(f"===== llama.cpp {tag} Windows git 빌드 시작 =====")
+
+        cmake = shutil.which("cmake") or (
+            r"C:\Program Files\CMake\bin\cmake.exe"
+            if os.path.isfile(r"C:\Program Files\CMake\bin\cmake.exe") else None
+        )
+        vcvars, generator = _find_vcvars()
+        cuda_root, cuda_ver = _find_cuda_toolkit()
+
+        missing = []
+        if not cmake:
+            missing.append("CMake")
+        if not vcvars:
+            missing.append("Visual Studio Build Tools (C++ 클라이언트 도구)")
+        if not cuda_root:
+            missing.append("CUDA Toolkit (nvcc)")
+        if missing:
+            msg = "실패: 빌드 도구가 없습니다 — 설치 후 다시 시도하세요: " + ", ".join(missing)
+            _llama_install_log(msg)
+            LLAMA_BUILD_STATE["message"] = msg
+            return
+
+        # 소스 클론: <root>/.src/<tag> (Linux와 동일한 관리 트리)
+        src_dir = os.path.join(settings.get("llama_install_root"), ".src", tag)
+        os.makedirs(src_dir, exist_ok=True)
+        if not os.path.exists(os.path.join(src_dir, ".git")):
+            _llama_install_log(f"git clone --depth 1 --branch {tag} {LLAMA_GIT_REPO}")
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", tag, LLAMA_GIT_REPO, src_dir],
+                check=True, creationflags=NO_WINDOW,
+            )
+        else:
+            _llama_install_log("소스 이미 존재, git fetch")
+            subprocess.run(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=src_dir, check=True, creationflags=NO_WINDOW)
+            subprocess.run(["git", "checkout", tag], cwd=src_dir, check=True, creationflags=NO_WINDOW)
+
+        build_dir = os.path.join(src_dir, "build")
+        os.makedirs(build_dir, exist_ok=True)
+
+        def _q(s):
+            return f'"{s}"' if " " in s else s
+
+        # MSVC 환경은 vcvars 셸 안에서만 존재 → cmd /c 로 실행
+        cfg_args = [
+            "-B", "build", "-G", generator, "-A", "x64",
+            "-DGGML_CUDA=ON",
+            f"-DCUDAToolkit_ROOT={cuda_root}",
+            "-DGGML_CUDA_F16=ON",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DCMAKE_BUILD_TYPE=Release",
+        ]
+        cfg_line = " ".join(_q(a) for a in cfg_args)
+        _llama_install_log(f'call "{vcvars}" && {cmake} {cfg_line}')
+        LLAMA_BUILD_STATE["message"] = "CMake 구성 (GGML_CUDA=ON)"
+        subprocess.run(
+            ["cmd", "/c", f'call "{vcvars}" && {_q(cmake)} {cfg_line}'],
+            cwd=src_dir, check=True, capture_output=True, creationflags=NO_WINDOW,
+        )
+
+        nproc = os.cpu_count() or 4
+        build_line = f"{_q(cmake)} --build build --config Release -j {nproc}"
+        _llama_install_log(f'call "{vcvars}" && {build_line}')
+        LLAMA_BUILD_STATE["message"] = "CUDA 빌드 중"
+        subprocess.run(
+            ["cmd", "/c", f'call "{vcvars}" && {build_line}'],
+            cwd=src_dir, check=True, capture_output=True, creationflags=NO_WINDOW,
+        )
+
+        # 설치: <root>/llama-<tag>-cuda<toolkit버전>/bin/...
+        suffix = f"-cuda{cuda_ver}" if cuda_ver else ""
+        install_dir = os.path.join(settings.get("llama_install_root"), f"llama-{tag}{suffix}")
+        bin_src = os.path.join(build_dir, "bin", "Release")
+        if not os.path.isdir(bin_src) or not any(
+            f.startswith("llama-server") for f in os.listdir(bin_src)
+        ):
+            raise RuntimeError("빌드 결과가 없습니다: build\\bin\\Release (logs/llama_install.log 확인)")
+        unique = f"{os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
+        stage_dir = f"{install_dir}.installing-{unique}"
+        os.makedirs(os.path.join(stage_dir, "bin"))
+        for fn in os.listdir(bin_src):
+            shutil.copy2(os.path.join(bin_src, fn), os.path.join(stage_dir, "bin"))
+        staged_exe = _llama_server_exe(stage_dir)
+        verify = subprocess.run(
+            [staged_exe, "--version"], capture_output=True, text=True,
+            timeout=30, creationflags=NO_WINDOW,
+        )
+        if verify.returncode:
+            raise RuntimeError(
+                "빌드된 llama-server 실행 검증 실패: "
+                + (verify.stderr.strip() or verify.stdout.strip())
+            )
+        backup_dir = f"{install_dir}.backup-{unique}"
+        if os.path.exists(install_dir):
+            os.replace(install_dir, backup_dir)
+        try:
+            os.replace(stage_dir, install_dir)
+            stage_dir = None
+        except Exception:
+            if os.path.exists(backup_dir) and not os.path.exists(install_dir):
+                os.replace(backup_dir, install_dir)
+            raise
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+        _llama_install_log(f"설치 완료: {install_dir}")
+        LLAMA_BUILD_STATE["message"] = f"설치 완료: {install_dir}"
+    except subprocess.CalledProcessError as e:
+        err = e.stderr.decode(errors="ignore") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        tail_lines = (err or "").strip().splitlines()[-5:]
+        _llama_install_log(f"빌드 실패: {e} | " + "\n".join(tail_lines))
+        LLAMA_BUILD_STATE["message"] = "실패: 빌드 오류 — logs/llama_install.log 확인"
+    except Exception as e:
+        _llama_install_log(f"빌드 실패: {e}")
+        LLAMA_BUILD_STATE["message"] = f"실패: {e}"
+    finally:
+        if stage_dir and os.path.isdir(stage_dir):
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        LLAMA_BUILD_STATE["busy"] = False
+        scan_llama_versions()
+
+
+def _fetch_release_assets(tag):
+    res = requests.get(f"{GITHUB_API}/releases/tags/{tag}", timeout=20)
     res.raise_for_status()
-    return res.json().get("assets", []) or []
+    return _win_cuda_zip_assets(res.json())
 
 
-def _asset_score(name):
-    """Windows 자산 우선순위: CUDA 빌드(버전 높은 것) > x64."""
-    n = str(name).lower()
-    score = 0
-    if "cuda" in n:
-        m = re.search(r"cuda[-_]?(\d+)(?:\.(\d+))?", n)
-        if m:
-            score += int(m.group(1)) * 100 + int(m.group(2) or 0)
-    if "x64" in n:
-        score += 1
-    return score
+def _asset_cuda_ver(name):
+    m = re.search(r"cuda[-_]?(\d+)(?:\.(\d+))?", str(name).lower())
+    return int(m.group(1)) * 100 + int(m.group(2) or 0) if m else 0
 
 
-def _pick_windows_asset(assets, preferred=""):
+def _asset_cuda_str(name):
+    """자산 이름에서 CUDA 버전 문자열 추출 (예: '...cuda-12.4...' -> '12.4')."""
+    m = re.search(r"cuda[-_]?(\d+)(?:\.(\d+))?", str(name).lower())
+    if not m:
+        return ""
+    return m.group(1) + ("." + m.group(2) if m.group(2) else "")
+
+
+def _pick_windows_asset(assets, preferred="", driver_max=None):
+    """Windows CUDA zip을 고른다.
+
+    지정한 자산이 있으면 그것, 없으면 x64 후보 안에서 드라이버가 지원하는
+    (nvidia-smi 최대 CUDA <= driver_max) 버전 중 가장 높은 것을 선택한다.
+    호환 버전이 없으면 설치를 중단해 드라이버와 맞지 않는 빌드를 막는다.
+    """
     if preferred:
         for asset in assets:
             if asset.get("name") == preferred:
+                cuda = _asset_cuda_ver(asset.get("name", ""))
+                if driver_max is not None and cuda and cuda > driver_max:
+                    raise HTTPException(
+                        400,
+                        f"선택한 CUDA {_asset_cuda_str(asset['name'])} 빌드는 현재 드라이버 최대 CUDA "
+                        f"{driver_max // 100}.{driver_max % 100}보다 높습니다",
+                    )
                 return asset
         raise HTTPException(400, f"지정한 릴리스 자산이 없습니다: {preferred}")
-    candidates = [a for a in assets if "win" in a.get("name", "").lower() and "x64" in a.get("name", "").lower()]
-    if not candidates:
-        raise HTTPException(400, "Windows x64용 llama.cpp 릴리스 자산을 찾지 못했습니다")
-    candidates.sort(key=lambda a: (_asset_score(a["name"]), a["name"]), reverse=True)
-    return candidates[0]
+    cands = [a for a in assets if "x64" in a.get("name", "").lower()] or list(assets)
+    if not cands:
+        raise HTTPException(400, "Windows용 llama.cpp CUDA 릴리스 자산을 찾지 못했습니다")
+
+    def score(a):
+        cuda = _asset_cuda_ver(a["name"])
+        compat = 1 if (driver_max is None or cuda <= driver_max) else 0
+        return (compat, cuda)
+
+    compatible = [a for a in cands if driver_max is None or _asset_cuda_ver(a["name"]) <= driver_max]
+    if not compatible:
+        maximum = f"{driver_max // 100}.{driver_max % 100}" if driver_max is not None else "알 수 없음"
+        raise HTTPException(400, f"현재 드라이버 최대 CUDA {maximum}와 호환되는 Windows 빌드가 없습니다")
+    compatible.sort(key=lambda a: (score(a), a["name"]), reverse=True)
+    return compatible[0]
+
+
+def _download_github_file(url, dest_path):
+    """GitHub 릴리스 자산을 스트리밍 다운로드한다 (진행률 로그 포함)."""
+    import requests
+
+    _llama_install_log(f"다운로드: {url}")
+    LLAMA_BUILD_STATE["message"] = f"다운로드 중: {os.path.basename(dest_path)}"
+    with requests.get(url, stream=True, timeout=(20, 600)) as resp:
+        resp.raise_for_status()
+        total = int(resp.headers.get("Content-Length") or 0)
+        done = 0
+        last_pct = -1
+        with open(dest_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=1024 * 256):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                done += len(chunk)
+                pct = int(done * 100 / total) if total else 0
+                if pct >= last_pct + 5:
+                    last_pct = pct
+                    _llama_install_log(f"다운로드 {pct}% ({done // (1024 * 1024)} MB)")
+
+
+def _install_cudart_bundle(tag, main_fname, install_dir, tmp_dir):
+    """Windows CUDA 빌드와 짝인 CUDA 런타임 DLL 번들(cudart-*.zip)을 함께 설치한다.
+
+    공식 릴리스는 cudart64/cublas64 등 런타임 DLL을 메인 zip과 별도 zip으로 배포한다.
+    이것 없이는 ggml-cuda.dll이 로딩되지 않아 에러 로그 없이 CPU 전용으로 동작하므로,
+    CUDA 빌드라면 항상 함께 받아 같은 폴더에 조합 설치해야 한다.
+    번들 설치 또는 검증 실패 시 staging 설치 전체를 폐기한다.
+    """
+    cuda_str = _asset_cuda_str(main_fname)
+    if not cuda_str:
+        return  # CPU 빌드 — cudart 번들 없음
+    try:
+        import platform
+
+        arch = "arm64" if platform.machine().lower() in ("arm64", "aarch64") else "x64"
+        LLAMA_BUILD_STATE["message"] = f"CUDA 런타임 DLL 다운로드 중 (cuda {cuda_str})"
+        res = requests.get(f"{GITHUB_API}/releases/tags/{tag}", timeout=30)
+        res.raise_for_status()
+        pat = re.compile(r"^cudart-.*win-cuda-" + re.escape(cuda_str) + r".*\.zip$", re.I)
+        asset = next(
+            (a for a in res.json().get("assets", [])
+             if pat.fullmatch(a.get("name", "")) and arch in a.get("name", "").lower()),
+            None,
+        )
+        if not asset:
+            msg = (f"CUDA {cuda_str}에 해당하는 cudart 번들을 릴리스에서 찾지 못했습니다 — "
+                   f"CUDA 런타임 DLL이 없어 GPU 실행이 불가합니다")
+            raise RuntimeError(msg)
+        zip_path = os.path.join(tmp_dir, asset["name"])
+        _download_github_file(asset.get("browser_download_url") or asset.get("download_url"), zip_path)
+
+        LLAMA_BUILD_STATE["message"] = "CUDA 런타임 DLL 압축 해제 중"
+        stage = os.path.join(tmp_dir, f"cudart-{tag}")
+        if os.path.exists(stage):
+            shutil.rmtree(stage, ignore_errors=True)
+        os.makedirs(stage, exist_ok=True)
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(stage)
+        # 단일 최상위 폴더로 묶여 있으면 한 단계 끌어올린다.
+        entries = [e for e in os.listdir(stage) if not e.startswith(".")]
+        if len(entries) == 1 and os.path.isdir(os.path.join(stage, entries[0])):
+            inner = os.path.join(stage, entries[0])
+            for item in os.listdir(inner):
+                shutil.move(os.path.join(inner, item), os.path.join(stage, item))
+            os.rmdir(inner)
+        n_files = 0
+        for item in os.listdir(stage):
+            dst = os.path.join(install_dir, item)
+            if os.path.exists(dst):
+                (shutil.rmtree if os.path.isdir(dst) else os.remove)(dst)
+            shutil.move(os.path.join(stage, item), dst)
+            n_files += 1
+        _llama_install_log(f"CUDA 런타임 DLL 설치 완료: {n_files}개 파일 ({asset['name']})")
+    except Exception as e:
+        msg = f"CUDA 런타임 DLL 설치 실패: {e} — GPU 실행이 불가합니다 (logs/llama_install.log 확인)"
+        _llama_install_log("오류: " + msg)
+        raise RuntimeError(msg) from e
 
 
 def _install_llama_windows(tag, asset_name=""):
     """GitHub 릴리스의 Windows CUDA 프리빌트 zip을 내려받아 <root>/llama-<tag>에 설치한다."""
     LLAMA_BUILD_STATE.update(busy=True, tag=tag, message="시작", started_at=time.time())
     tmp_dir = os.path.join(BASE_DIR, "logs", "llama_install_tmp")
+    install_dir = None
+    stage_dir = None
+    backup_dir = None
     try:
         import requests
 
         _llama_install_log(f"===== llama.cpp {tag} Windows 설치 시작 =====")
         LLAMA_BUILD_STATE["message"] = "릴리스 정보 조회"
         assets = _fetch_release_assets(tag)
-        asset = _pick_windows_asset(assets, asset_name)
-        url = asset.get("download_url", "")
+        if not asset_name and not assets:
+            # 프리빌트 바이너리가 없는 태그(예: stable 릴리스) → git 클론 + CUDA 빌드
+            _llama_install_log(f"{tag} 릴리스에 Windows 프리빌트가 없어 git 빌드로 전환")
+            LLAMA_BUILD_STATE["message"] = "프리빌트 없음 — git 빌드로 전환"
+            _build_llama_git_windows(tag)
+            return
+        asset = _pick_windows_asset(assets, asset_name, driver_max=_driver_max_cuda())
+        url = asset.get("url", "")
         fname = asset.get("name", f"llama-{tag}.zip")
         if not url or not fname.lower().endswith(".zip"):
             raise RuntimeError(f"다운로드 가능한 zip 자산을 찾지 못했습니다: {fname}")
@@ -1178,11 +1616,18 @@ def _install_llama_windows(tag, asset_name=""):
                         last_pct = pct
                         _llama_install_log(f"다운로드 {pct}% ({done // (1024 * 1024)} MB)")
 
+        # CUDA 버전별로 별도 폴더에 설치한다. staging 폴더는 최종 폴더와
+        # 같은 볼륨에 만들어 검증 후 디렉터리 rename으로 안전하게 교체한다.
+        cuda_str = _asset_cuda_str(fname)
+        suffix = f"-cuda{cuda_str}" if cuda_str else ""
+        install_dir = os.path.join(settings.get("llama_install_root"), f"llama-{tag}{suffix}")
+        os.makedirs(os.path.dirname(install_dir), exist_ok=True)
+        unique = f"{os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
+        stage_dir = f"{install_dir}.installing-{unique}"
+        backup_dir = f"{install_dir}.backup-{unique}"
+        os.makedirs(stage_dir)
+
         LLAMA_BUILD_STATE["message"] = "압축 해제 중"
-        stage_dir = os.path.join(tmp_dir, f"extract-{tag}")
-        if os.path.exists(stage_dir):
-            shutil.rmtree(stage_dir, ignore_errors=True)
-        os.makedirs(stage_dir, exist_ok=True)
         with zipfile.ZipFile(zip_path) as zf:
             zf.extractall(stage_dir)
 
@@ -1197,14 +1642,45 @@ def _install_llama_windows(tag, asset_name=""):
         if not _llama_server_exe(stage_dir):
             raise RuntimeError("압축 파일 안에 llama-server 실행 파일을 찾지 못했습니다")
 
-        install_dir = os.path.join(settings.get("llama_install_root"), f"llama-{tag}")
+        # CUDA 런타임 DLL(cudart64/cublas64 등)은 공식 릴리스에서 별도 zip으로 배포된다.
+        # 이것을 함께 설치하지 않으면 ggml-cuda.dll이 로딩돼지 않아 에러 로그 없이
+        # CPU 전용으로만 동작하므로, CUDA 빌드라면 항상 조합 설치한다.
+        _install_cudart_bundle(tag, fname, stage_dir, tmp_dir)
+
+        installed_exe = _llama_server_exe(stage_dir)
+        verify = subprocess.run(
+            [installed_exe, "--version"], capture_output=True, text=True,
+            timeout=30, creationflags=NO_WINDOW,
+        )
+        if verify.returncode:
+            raise RuntimeError("설치된 llama-server와 CUDA DLL 로딩 검증 실패: " + (verify.stderr.strip() or verify.stdout.strip()))
+
+        LLAMA_BUILD_STATE["message"] = "검증 완료 — 기존 설치 교체 중"
         if os.path.exists(install_dir):
-            shutil.rmtree(install_dir, ignore_errors=True)
-        os.makedirs(os.path.dirname(install_dir), exist_ok=True)
-        shutil.move(stage_dir, install_dir)
+            os.replace(install_dir, backup_dir)
+        try:
+            os.replace(stage_dir, install_dir)
+            stage_dir = None
+        except Exception:
+            if backup_dir and os.path.exists(backup_dir) and not os.path.exists(install_dir):
+                os.replace(backup_dir, install_dir)
+                backup_dir = None
+            raise
+        if backup_dir and os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
+            backup_dir = None
+
         _llama_install_log(f"설치 완료: {install_dir}")
         LLAMA_BUILD_STATE["message"] = f"설치 완료: {install_dir}"
     except Exception as e:
+        if stage_dir and os.path.isdir(stage_dir):
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        if backup_dir and os.path.exists(backup_dir) and install_dir and not os.path.exists(install_dir):
+            try:
+                os.replace(backup_dir, install_dir)
+                backup_dir = None
+            except OSError as restore_error:
+                _llama_install_log(f"기존 설치 자동 복구 실패: {restore_error} (백업: {backup_dir})")
         _llama_install_log(f"설치 실패: {e}")
         LLAMA_BUILD_STATE["message"] = f"실패: {e}"
     finally:
@@ -1431,23 +1907,24 @@ MANAGER_TASK_NAME = "MainServer"
 
 
 def _windows_manager_service():
-    """Task Scheduler의 MainServer 태스크 상태 — Windows에서 manager 자동 시작 경로.
+    """Windows manager 자동 시작 상태.
 
-    Linux의 systemd user service(linger)와 동일한 역할을 합니다.
+    HKCU Run의 숨김 Python supervisor를 사용합니다.
+    Linux의 systemd user service(linger)와 동일한 역할입니다.
     """
-    unit = f"TaskScheduler:\\{MANAGER_TASK_NAME}"
-    base = {"enabled": False, "unit": unit, "label": "Task Scheduler"}
     try:
-        result = subprocess.run(
-            ["schtasks", "/query", "/tn", MANAGER_TASK_NAME],
-            capture_output=True, text=True, timeout=10,
-        )
+        import autostart_service
+
+        state = autostart_service.status()
     except (OSError, subprocess.SubprocessError):
-        return base
-    if result.returncode != 0:
-        return base
-    base["enabled"] = True
-    return base
+        state = {"exists": False, "registry": False, "task_scheduler": False}
+    return {
+        "enabled": bool(state.get("exists")),
+        "unit": f"HKCU Run:\\{MANAGER_TASK_NAME}",
+        "label": "Windows 자동 시작",
+        "registry": bool(state.get("registry")),
+        "task_scheduler": bool(state.get("task_scheduler")),
+    }
 
 
 def _manager_service_status():
@@ -1472,45 +1949,39 @@ def linux_settings_get():
 
 @app.post("/api/linux-settings")
 def linux_settings_save(data: dict):
+    # autostart 토글 시 Task Scheduler 등록/해제를 자동 수행 (별도 버튼 불필요)
+    if IS_WINDOWS:
+        was_autostart = settings.get("autostart", False)
+        now_autostart = data.get("autostart", was_autostart)
+        if now_autostart and not was_autostart:
+            import autostart_service
+            try:
+                autostart_service.register()
+            except Exception as e:
+                print(f"[autostart] 자동 등록 실패: {e}")
+        elif not now_autostart and was_autostart:
+            import autostart_service
+            try:
+                autostart_service.unregister()
+            except Exception as e:
+                print(f"[autostart] 자동 해제 실패: {e}")
+
     effective = settings.save(data)
     scan_llama_versions()
     scan_gguf_models()
-    return {"ok": True, "effective": effective}
-
-
-@app.post("/api/manager-service/register")
-def manager_service_register():
-    """Windows: 로그온 시 start_manager.bat을 실행하는 Task Scheduler 태스크 등록."""
-    if not IS_WINDOWS:
-        raise HTTPException(400, "Windows 전용입니다 (Linux는 main_server.service를 사용합니다)")
-    import autostart_service
-
-    try:
-        autostart_service.register()
-    except Exception as error:
-        raise HTTPException(500, f"태스크 등록 실패: {error}") from error
-    return {"ok": True, "manager_service": _manager_service_status()}
-
-
-@app.post("/api/manager-service/unregister")
-def manager_service_unregister():
-    if not IS_WINDOWS:
-        raise HTTPException(400, "Windows 전용입니다 (Linux는 main_server.service를 사용합니다)")
-    import autostart_service
-
-    try:
-        autostart_service.unregister()
-    except Exception as error:
-        raise HTTPException(500, f"태스크 삭제 실패: {error}") from error
-    return {"ok": True, "manager_service": _manager_service_status()}
+    return {"ok": True, "effective": effective, "manager_service": _manager_service_status()}
 
 
 GPU_CONTROL_HELPER = "/usr/local/sbin/main-server-gpu-control"
 GPU_TUNE_CONFIG_DIR = "/etc/main-server/gpu-tune.d"
-# Windows는 root helper 대신 nvidia-smi를 직접 호출하고, 영속 설정을
+# Windows는 PawnIO 관리자 helper를 통해 nvidia-smi를 실행하고, 영속 설정을
 # main_server 루트의 JSON 파일에 둡니다. manager 시작 시 다시 적용해
 # Linux gpu-tune.service와 같은 부팅 유지 동작을 제공합니다.
 GPU_TUNE_SETTINGS_FILE = os.path.join(BASE_DIR, "gpu_tune_settings.json")
+_gpu_tuning_apply_lock = threading.Lock()
+_gpu_tuning_persistence = {
+    "status": "idle", "applied": 0, "errors": [], "updated_at": None,
+}
 
 
 def _load_configured_gpu_tuning():
@@ -1554,7 +2025,11 @@ def _save_gpu_tuning_windows(uuid_key, enabled, power_limit=None, clock_max=None
 
 def _run_nvidia_smi(args):
     try:
-        result = subprocess.run(["nvidia-smi"] + list(args), capture_output=True, text=True, timeout=20)
+        result = subprocess.run(
+            ["nvidia-smi"] + list(args),
+            capture_output=True, text=True, timeout=20,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
     except (OSError, subprocess.SubprocessError) as error:
         raise HTTPException(503, f"nvidia-smi 실행 실패: {error}") from error
     if result.returncode:
@@ -1568,6 +2043,7 @@ def _gpu_index_by_uuid(uuid_key):
     out = subprocess.run(
         ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
         capture_output=True, text=True, timeout=8,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     ).stdout
     for line in out.splitlines():
         parts = [part.strip() for part in line.split(",")]
@@ -1578,6 +2054,14 @@ def _gpu_index_by_uuid(uuid_key):
 
 def _gpu_tuning_apply_values(uuid_key, power, clock, fan):
     """nvidia-smi로 전력/클럭/팬 값을 실제 GPU에 적용한다. 팬은 미지원 시 경고만 남긴다."""
+    if IS_WINDOWS:
+        try:
+            response = motherboard_fan_controller.gpu_tune(
+                uuid_key, int(power), int(clock), int(fan or 0)
+            )
+        except Exception as error:
+            raise HTTPException(400, str(error)) from error
+        return list(response.get("warnings") or [])
     warnings = []
     index = _gpu_index_by_uuid(uuid_key)
     i_args = ["-i", index]
@@ -1633,19 +2117,47 @@ def _gpu_tuning_set_windows(uuid_key, action, power=None, clock=None, fan=None):
 def _apply_saved_gpu_tuning():
     """manager 시작 시 저장된 Windows GPU 튜닝을 다시 적용 (부팅 유지 상당)."""
     if not IS_WINDOWS:
-        return
+        return True
+    if not settings.get("gpu_tuning_enabled", True):
+        print("[gpu-tune] 'GPU 튜닝 사용'이 꺼져 있어 저장 설정 재적용을 건너뜁니다")
+        _gpu_tuning_persistence.update({
+            "status": "disabled", "applied": 0, "errors": [], "updated_at": time.time(),
+        })
+        return True
     data = _read_json(GPU_TUNE_SETTINGS_FILE, {})
     if not isinstance(data, dict):
-        return
-    for uuid_key, entry in data.items():
-        if not isinstance(entry, dict) or not entry.get("enabled"):
-            continue
-        try:
-            _gpu_tuning_apply_values(
-                uuid_key, entry.get("power_limit"), entry.get("clock_max"), entry.get("fan_percent")
-            )
-        except Exception as error:
-            print(f"[gpu-tune] {uuid_key} 저장 설정 적용 실패: {error}")
+        return True
+    errors = []
+    applied = 0
+    with _gpu_tuning_apply_lock:
+        for uuid_key, entry in data.items():
+            if not isinstance(entry, dict) or not entry.get("enabled"):
+                continue
+            try:
+                _gpu_tuning_apply_values(
+                    uuid_key, entry.get("power_limit"), entry.get("clock_max"), entry.get("fan_percent")
+                )
+                applied += 1
+            except Exception as error:
+                message = f"{uuid_key}: {error}"
+                errors.append(message)
+                print(f"[gpu-tune] 저장 설정 적용 실패: {message}")
+    _gpu_tuning_persistence.update({
+        "status": "ready" if not errors else "retrying",
+        "applied": applied, "errors": errors, "updated_at": time.time(),
+    })
+    if not errors and applied:
+        print(f"[gpu-tune] 저장 설정 {applied}개 부팅 재적용 완료")
+    return not errors
+
+
+def _retry_saved_gpu_tuning():
+    """Retry while the NVIDIA driver/elevated helper finishes booting."""
+    for delay in (5, 10, 20, 40, 60):
+        time.sleep(delay)
+        if _apply_saved_gpu_tuning():
+            return
+    _gpu_tuning_persistence["status"] = "error"
 
 
 def _read_gpu_tuning_config(path):
@@ -1674,6 +2186,7 @@ def _gpu_tuning_snapshot():
     result = subprocess.run(
         ["nvidia-smi", f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
         capture_output=True, text=True, timeout=8,
+        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
     )
     if result.returncode:
         raise HTTPException(503, result.stderr.strip() or "NVIDIA GPU 정보를 읽지 못했습니다")
@@ -1725,6 +2238,7 @@ def _gpu_tuning_snapshot():
         "available": bool(gpus), "gpus": gpus,
         "service": "manager-autostart" if IS_WINDOWS else "gpu-tune.service",
         "tuning_mode": "power_and_clock_cap", "voltage_target_supported": False,
+        "persistence": dict(_gpu_tuning_persistence) if IS_WINDOWS else None,
     }
 
 
@@ -1738,6 +2252,9 @@ def gpu_tuning_set(data: dict):
     if not IS_WINDOWS and not os.path.isfile(GPU_CONTROL_HELPER):
         raise HTTPException(503, "GPU 제어 helper가 설치되지 않았습니다")
     action = str(data.get("action") or "set")
+    # 마스터 토글이 꺼져 있으면 값 쓰기(set/reset)를 차단 (disable은 허용)
+    if action in ("set", "reset") and not settings.get("gpu_tuning_enabled", True):
+        raise HTTPException(400, "GPU 튜닝이 비활성화되어 있습니다. 'GPU 전력 / 코어 클럭 / 팬' 섹션의 'GPU 튜닝 사용' 토글을 켜세요")
     try:
         gpu_selector = str(data.get("gpu_uuid") or data.get("gpu_index", 0))
         if not (gpu_selector.isdigit() or re.fullmatch(r"GPU-[A-Za-z0-9-]+", gpu_selector)):
@@ -1745,6 +2262,8 @@ def gpu_tuning_set(data: dict):
         power = int(data["power_limit"]) if action == "set" else None
         clock = int(data["clock_max"]) if action == "set" else None
         fan = int(data["fan_percent"]) if action == "set" else None
+        if fan is not None and fan != 0 and not 20 <= fan <= 100:
+            raise ValueError("GPU 팬은 자동(0) 또는 20~100%여야 합니다")
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(400, f"GPU 설정값이 올바르지 않습니다: {error}") from error
 
@@ -1755,6 +2274,7 @@ def gpu_tuning_set(data: dict):
             out = subprocess.run(
                 ["nvidia-smi", "--query-gpu=index,uuid", "--format=csv,noheader"],
                 capture_output=True, text=True, timeout=8,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
             ).stdout
             uuid_key = next(
                 (line.split(",")[1].strip() for line in out.splitlines()
@@ -1888,6 +2408,7 @@ def _restart_now():
                 creationflags=(
                     getattr(subprocess, "DETACHED_PROCESS", 0)
                     | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+                    | getattr(subprocess, "CREATE_NO_WINDOW", 0)
                 ),
             )
         except Exception as error:
@@ -2013,24 +2534,35 @@ def _ensure_files():
                     "version": "",
                     "model": os.path.join(root, "MODEL.gguf") if root else "",
                     "mmproj": "",
-                    "ctx": "262144",
+                    "ctx": "32768",
                     "host": "0.0.0.0",
                     "port": settings.get("llama_port"),
                     "fit": True,
                     "flash": True,
-                    "cacheK": "q4_0",
-                    "cacheV": "q4_0",
-                    "tempMode": "general",
-                    "useTemplate": False,
+                    "cacheK": "q8_0",
+                    "cacheV": "q8_0",
                     "reasoningMode": "auto",
                     "reasoningBudget": "",
-                    "ngl": "999",
+                    "ngl": "auto",
                     "fitTarget": "1024",
                     "nPredict": "-1",
                     "parallel": "1",
                     "threads": "",
-                    "sleepIdleSeconds": "-1",
-                    "optionalArgs": {},
+                    "batchSize": "",
+                    "ubatchSize": "",
+                    "threadsBatch": "",
+                    "ctxCheckpoints": "",
+                    "cacheRam": "",
+                    "cacheReuse": "",
+                    "splitMode": "",
+                    "tensorSplit": "",
+                    "mainGpu": "",
+                    "cpuMoe": False,
+                    "cpuMoeLayers": "",
+                    "specType": "",
+                    "specDraftNMax": "4",
+                    "specDraftModel": "",
+                    "specDraftNgl": "",
                     "gpuDevices": [],
                     "device": "",
                 }
@@ -2045,29 +2577,61 @@ def _ensure_files():
 
 @app.on_event("startup")
 def startup():
-    global _guard_thread
     _ensure_files()
+    # NAS is mounted before managed workloads are started so ComfyUI's output
+    # directory already points at network storage when ComfyUI launches.
+    try:
+        import nas_mount
+        nas_mount.auto_mount()
+    except Exception as error:
+        print(f"[nas] 최초 자동 마운트 실패, 백그라운드 재시도 시작: {error}")
+        nas_mount.auto_mount_async()
+    # Fresh Windows installation: download the pinned official PawnIO installer,
+    # verify SHA-256 + Authenticode, and request UAC once. The web server remains
+    # available while the first-run driver bootstrap runs in the background.
+    if IS_WINDOWS:
+        pawnio_bootstrap.ensure_async()
     scan_llama_versions()
     scan_gguf_models()
     _sample_hw()
     try:
         # Windows: 저장된 GPU 전력/클럭 설정을 서비스 시작 전에 다시 적용
         # (Linux gpu-tune.service의 부팅 유지 동작 상당).
-        _apply_saved_gpu_tuning()
+        if not _apply_saved_gpu_tuning():
+            threading.Thread(
+                target=_retry_saved_gpu_tuning,
+                name="gpu-tuning-boot-retry", daemon=True,
+            ).start()
     except Exception as error:
         print(f"[gpu-tune] 저장 설정 적용 실패: {error}")
-    if _guard_thread is None or not _guard_thread.is_alive():
-        _guard_thread = threading.Thread(
-            target=_run_guard_server,
-            name="llama-vram-guard",
-            daemon=True,
-        )
-        _guard_thread.start()
     if settings.get("autostart"):
+        # Windows: 예전 batch/Task Scheduler 등록도 숨김 supervisor 등록으로
+        # 자동 마이그레이션합니다.
+        if IS_WINDOWS:
+            try:
+                import autostart_service
+                st = autostart_service.status()
+                if not st.get("exists"):
+                    autostart_service.register()
+                    print("[autostart] 부팅 시 태스크(MainServer) 미감지 → 자동 재등록")
+            except Exception as error:
+                print(f"[autostart] 자동 재등록 실패: {error}")
         try:
-            _auto_start_services()
+            if IS_WINDOWS and cmp170_service.autostart_enabled() and not cmp170_service.status(include_log=False).get("unlocked"):
+                threading.Thread(
+                    target=_auto_start_services_after_cmp,
+                    name="workloads-after-cmp170-unlock", daemon=True,
+                ).start()
+                print("[cmp170] 로그인 자동 언락 완료 전까지 GPU 워크로드 시작을 대기합니다")
+            else:
+                _auto_start_services()
         except Exception:
             pass
+
+
+@app.on_event("shutdown")
+def shutdown():
+    motherboard_fan_controller.close()
 
 
 def _auto_start_services():
@@ -2107,6 +2671,14 @@ def _auto_start_services():
             pass
     if not any_set:
         return
+
+
+def _auto_start_services_after_cmp():
+    if cmp170_service.wait_until_unlocked(timeout=180):
+        print("[cmp170] 64GB 확인 완료, 저장된 워크로드 자동 시작을 진행합니다")
+        _auto_start_services()
+    else:
+        print("[cmp170] 180초 내 64GB 확인 실패, GPU 보호를 위해 워크로드 자동 시작을 건너뜁니다")
 
 
 if __name__ == "__main__":
