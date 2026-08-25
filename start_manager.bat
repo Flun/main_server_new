@@ -3,8 +3,8 @@ setlocal
 cd /d "%~dp0"
 if exist ".venv\Scripts\pythonw.exe" (set "PY=.venv\Scripts\pythonw.exe") else (set "PY=python")
 echo == AI Server Manager (port 8999) ==
-rem 부팅/로그온 직후 시스템(GPU 드라이버, 네트워크 등) 준비 대기
-timeout /t 10 >nul
+rem 프론트는 즉시 시작하고 GPU/NAS/팬 초기화는 app.py 백그라운드에서 처리
+timeout /t 1 >nul
 :loop
 rem 이미 manager가 떠 있으면(예: /api/restart의 restarter가 먼저 기동한 경우)
 rem 감독만 하고 중복 spawn을 피합니다.

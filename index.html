@@ -71,6 +71,7 @@
                 <div class="flex items-center gap-2 mt-1.5 text-sm text-zinc-500 font-medium">
                     <span class="w-2 h-2 rounded-full bg-emerald-500/80"></span>
                     <span>System Online</span>
+                    <span v-if="status.initialization && !status.initialization.ready" class="ml-2 pl-2 border-l border-zinc-700 text-amber-400">{{ status.initialization.message }}</span>
                     <span v-if="hw.lhm_available" class="ml-2 pl-2 border-l border-zinc-700 text-indigo-400">LHM Synced</span>
                     <span v-if="!isWindows" class="ml-2 pl-2 border-l border-zinc-700 inline-flex items-center gap-1.5" :class="monitorPower.state === 'on' ? 'text-emerald-400' : monitorPower.state === 'off' ? 'text-zinc-400' : 'text-amber-400'">
                         <span class="w-2 h-2 rounded-full" :class="monitorPower.state === 'on' ? 'bg-emerald-400' : monitorPower.state === 'off' ? 'bg-zinc-600' : 'bg-amber-400'"></span>
@@ -1007,7 +1008,7 @@
                         gpu_temp: null, gpu_hotspot: null, gpu_fan: null, gpu_power: null,
                         lhm_available: false
                     },
-                    status: { comfyui: false, llamacpp: false, vllm: false, telegram_bot: false, watcher: false },
+                    status: { comfyui: false, llamacpp: false, vllm: false, telegram_bot: false, watcher: false, initialization: {ready:false, message:'백그라운드 초기화 대기 중'} },
                     loading: { comfyui: false, llamacpp: false, vllm: false, bot: false, watcher: false, status: false },
                     scanData: { versions:[], models:[] },
                     logModal: { show: false, server: '', title: '', content: '', autoScroll: true },
@@ -1545,7 +1546,8 @@
                             llamacpp: !!(svc.llama && svc.llama.running),
                             vllm: !!(svc.vllm && svc.vllm.running),
                             telegram_bot: !!(svc.bot && svc.bot.running),
-                            watcher: !!(svc.watcher && svc.watcher.running)
+                            watcher: !!(svc.watcher && svc.watcher.running),
+                            initialization: d.initialization || {ready:true, message:'초기화 완료'}
                         };
                         const runtimeSettings = d.settings || {};
                         this.isWindows = !!d.is_windows;

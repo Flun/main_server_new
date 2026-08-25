@@ -65,6 +65,17 @@ services = {
 STARTED_AT = time.time()
 _catalog_scan_lock = threading.Lock()
 _catalog_scan_last = 0.0
+_catalog_scan_inflight = False
+_sampler_started = threading.Event()
+_startup_state_lock = threading.Lock()
+_startup_state = {
+    "ready": False,
+    "phase": "starting",
+    "message": "프론트엔드 시작 중",
+    "started_at": STARTED_AT,
+    "completed_at": None,
+    "errors": [],
+}
 
 STATE = {
     "hw": {
@@ -390,17 +401,29 @@ def scan_gguf_models(root=None):
 
 
 def _refresh_catalogs_if_stale(max_age_seconds=60):
-    """Avoid walking version/model directories on every dashboard status poll."""
-    global _catalog_scan_last
+    """Refresh catalogs in the background; dashboard requests never wait for disk scans."""
+    global _catalog_scan_inflight
     now = time.monotonic()
     if now - _catalog_scan_last < max_age_seconds:
         return
     with _catalog_scan_lock:
-        if now - _catalog_scan_last < max_age_seconds:
+        if now - _catalog_scan_last < max_age_seconds or _catalog_scan_inflight:
             return
+        _catalog_scan_inflight = True
+    threading.Thread(target=_refresh_catalogs_worker, name="catalog-refresh", daemon=True).start()
+
+
+def _refresh_catalogs_worker():
+    global _catalog_scan_last, _catalog_scan_inflight
+    try:
         scan_llama_versions()
         scan_gguf_models()
-        _catalog_scan_last = now
+    except Exception as error:
+        print(f"[catalog] 백그라운드 검색 실패: {error}")
+    finally:
+        with _catalog_scan_lock:
+            _catalog_scan_last = time.monotonic()
+            _catalog_scan_inflight = False
 
 
 def _resolve_llama_binary(preset):
@@ -684,7 +707,11 @@ def _sampler():
         time.sleep(5)
 
 
-threading.Thread(target=_sampler, daemon=True).start()
+def _start_sampler_once():
+    if _sampler_started.is_set():
+        return
+    _sampler_started.set()
+    threading.Thread(target=_sampler, name="hardware-sampler", daemon=True).start()
 
 
 # ---------- 페이지 ----------
@@ -800,6 +827,9 @@ def _service_state(name):
 @app.get("/api/status")
 def status():
     _refresh_catalogs_if_stale()
+    with _startup_state_lock:
+        initialization = dict(_startup_state)
+        initialization["errors"] = list(_startup_state["errors"])
     return {
         "platform": "linux" if not IS_WINDOWS else "windows",
         "is_windows": IS_WINDOWS,
@@ -812,6 +842,7 @@ def status():
         "settings": settings.all() if not IS_WINDOWS else {},
         "llama_port": LLAMA_PORT,
         "last_run": _read_json(LAST_RUN_FILE, {}),
+        "initialization": initialization,
     }
 
 
@@ -2156,8 +2187,9 @@ def _retry_saved_gpu_tuning():
     for delay in (5, 10, 20, 40, 60):
         time.sleep(delay)
         if _apply_saved_gpu_tuning():
-            return
+            return True
     _gpu_tuning_persistence["status"] = "error"
+    return False
 
 
 def _read_gpu_tuning_config(path):
@@ -2578,35 +2610,55 @@ def _ensure_files():
 @app.on_event("startup")
 def startup():
     _ensure_files()
-    # NAS is mounted before managed workloads are started so ComfyUI's output
-    # directory already points at network storage when ComfyUI launches.
+    # Return from FastAPI startup immediately. Hardware, NAS and driver work is
+    # detached so the frontend is reachable while Windows is still bringing
+    # devices and network shares online.
+    _start_sampler_once()
+    _refresh_catalogs_if_stale(max_age_seconds=0)
+    threading.Thread(
+        target=_background_startup,
+        name="background-startup", daemon=True,
+    ).start()
+
+
+def _set_startup_state(phase, message, *, ready=None, error=None):
+    with _startup_state_lock:
+        _startup_state.update({"phase": phase, "message": message})
+        if ready is not None:
+            _startup_state["ready"] = bool(ready)
+            if ready:
+                _startup_state["completed_at"] = time.time()
+        if error:
+            _startup_state["errors"].append(str(error))
+
+
+def _background_startup():
+    # NAS gets its first attempt before managed workloads, but can no longer
+    # delay the web frontend. Failed mounts keep retrying in their own worker.
+    _set_startup_state("nas", "NAS 자동 연결 확인 중")
     try:
         import nas_mount
         nas_mount.auto_mount()
     except Exception as error:
         print(f"[nas] 최초 자동 마운트 실패, 백그라운드 재시도 시작: {error}")
         nas_mount.auto_mount_async()
-    # Fresh Windows installation: download the pinned official PawnIO installer,
-    # verify SHA-256 + Authenticode, and request UAC once. The web server remains
-    # available while the first-run driver bootstrap runs in the background.
+
+    _set_startup_state("hardware", "GPU 및 팬 제어 장치 준비 중")
     if IS_WINDOWS:
         pawnio_bootstrap.ensure_async()
-    scan_llama_versions()
-    scan_gguf_models()
-    _sample_hw()
+
+    tuning_ready = True
+    _set_startup_state("gpu_tuning", "저장된 GPU 전력·클럭 설정 적용 중")
     try:
-        # Windows: 저장된 GPU 전력/클럭 설정을 서비스 시작 전에 다시 적용
-        # (Linux gpu-tune.service의 부팅 유지 동작 상당).
         if not _apply_saved_gpu_tuning():
-            threading.Thread(
-                target=_retry_saved_gpu_tuning,
-                name="gpu-tuning-boot-retry", daemon=True,
-            ).start()
+            tuning_ready = _retry_saved_gpu_tuning()
     except Exception as error:
+        tuning_ready = False
         print(f"[gpu-tune] 저장 설정 적용 실패: {error}")
+        _set_startup_state("gpu_tuning", "GPU 설정 재적용 실패", error=error)
+
     if settings.get("autostart"):
-        # Windows: 예전 batch/Task Scheduler 등록도 숨김 supervisor 등록으로
-        # 자동 마이그레이션합니다.
+        _set_startup_state("services", "저장된 서비스 자동 시작 준비 중")
         if IS_WINDOWS:
             try:
                 import autostart_service
@@ -2616,17 +2668,19 @@ def startup():
                     print("[autostart] 부팅 시 태스크(MainServer) 미감지 → 자동 재등록")
             except Exception as error:
                 print(f"[autostart] 자동 재등록 실패: {error}")
+                _set_startup_state("services", "자동 시작 등록 확인 실패", error=error)
         try:
             if IS_WINDOWS and cmp170_service.autostart_enabled() and not cmp170_service.status(include_log=False).get("unlocked"):
-                threading.Thread(
-                    target=_auto_start_services_after_cmp,
-                    name="workloads-after-cmp170-unlock", daemon=True,
-                ).start()
+                _set_startup_state("cmp170", "CMP 170HX 64GB 언락 대기 중")
                 print("[cmp170] 로그인 자동 언락 완료 전까지 GPU 워크로드 시작을 대기합니다")
+                _auto_start_services_after_cmp()
             else:
                 _auto_start_services()
-        except Exception:
-            pass
+        except Exception as error:
+            _set_startup_state("services", "서비스 자동 시작 중 오류", error=error)
+
+    message = "백그라운드 초기화 완료" if tuning_ready else "초기화 완료 (GPU 설정 오류 확인 필요)"
+    _set_startup_state("ready", message, ready=True)
 
 
 @app.on_event("shutdown")

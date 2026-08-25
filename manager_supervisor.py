@@ -44,7 +44,9 @@ def main() -> int:
     if mutex is None:
         return 0
     os.makedirs(os.path.join(BASE_DIR, "logs"), exist_ok=True)
-    time.sleep(10)
+    # The frontend starts immediately. Device and NAS readiness is handled by
+    # app.py background initialization, so no fixed boot delay is required.
+    time.sleep(0.5)
     while True:
         if _manager_online():
             time.sleep(5)
