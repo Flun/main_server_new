@@ -3,6 +3,7 @@ import json
 import os
 import platform
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -254,6 +255,7 @@ def save_comfy_settings(data):
         "listen": True,
         "use_sage_attention": True,
         "disable_cuda_malloc": True,
+        "disable_pinned_memory": True,
         "preview_method_none": True,
         "cache_none": False,
         "reserve_vram_enabled": True,
@@ -263,6 +265,7 @@ def save_comfy_settings(data):
         "fast_disk": False,
         "fast_fp16_accumulation": False,
         "gpu_device": "",
+        "custom_args": "",
     }
     existing = load_comfy_settings()
     if "reserve_vram_enabled" not in existing and "reserve_vram_1" in existing:
@@ -270,7 +273,7 @@ def save_comfy_settings(data):
         existing["reserve_vram"] = 1.0
     merged.update({k: existing[k] for k in merged if k in existing})
     for key in (
-        "listen", "use_sage_attention", "disable_cuda_malloc", "preview_method_none", "cache_none", "reserve_vram_enabled",
+        "listen", "use_sage_attention", "disable_cuda_malloc", "disable_pinned_memory", "preview_method_none", "cache_none", "reserve_vram_enabled",
         "disable_async_offload", "disable_dynamic_vram", "fast_disk", "fast_fp16_accumulation",
     ):
         if key in data:
@@ -282,8 +285,41 @@ def save_comfy_settings(data):
             raise HTTPException(400, "reserve_vram은 0 이상의 숫자여야 합니다")
     if "gpu_device" in data:
         merged["gpu_device"] = str(data.get("gpu_device") or "").strip()
+    if "custom_args" in data:
+        custom_args = str(data.get("custom_args") or "").strip()
+        _parse_comfy_custom_args(custom_args)
+        merged["custom_args"] = custom_args
     _write_json(COMYFUI_SETTINGS_FILE, merged)
     return merged
+
+
+def _parse_comfy_custom_args(value):
+    value = str(value or "").strip()
+    if not value:
+        return []
+    if len(value) > 4096:
+        raise HTTPException(400, "ComfyUI 사용자 인자는 4096자 이하여야 합니다")
+    if "\x00" in value:
+        raise HTTPException(400, "ComfyUI 사용자 인자에 NUL 문자를 사용할 수 없습니다")
+    try:
+        # The resulting list is passed directly to Popen without a shell, so
+        # shell operators remain ordinary argument text instead of executing.
+        if not IS_WINDOWS:
+            return shlex.split(value, posix=True)
+        import ctypes
+        argument_count = ctypes.c_int()
+        command_line_to_argv = ctypes.windll.shell32.CommandLineToArgvW
+        command_line_to_argv.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_int)]
+        command_line_to_argv.restype = ctypes.POINTER(ctypes.c_wchar_p)
+        arguments = command_line_to_argv(value, ctypes.byref(argument_count))
+        if not arguments:
+            raise ValueError("Windows 인자 구문을 해석하지 못했습니다")
+        try:
+            return [arguments[index] for index in range(argument_count.value)]
+        finally:
+            ctypes.windll.kernel32.LocalFree(arguments)
+    except ValueError as error:
+        raise HTTPException(400, f"ComfyUI 사용자 인자 구문 오류: {error}") from error
 
 
 def normalize_gpu_devices(value):
@@ -636,6 +672,8 @@ def _comfy_args():
         args += ["--use-sage-attention"]
     if s.get("disable_cuda_malloc"):
         args += ["--disable-cuda-malloc"]
+    if s.get("disable_pinned_memory"):
+        args += ["--disable-pinned-memory"]
     if s.get("reserve_vram_enabled"):
         args += ["--reserve-vram", str(s.get("reserve_vram", 1.0))]
     if s.get("disable_async_offload"):
@@ -646,6 +684,7 @@ def _comfy_args():
         args += ["--fast-disk"]
     if s.get("fast_fp16_accumulation"):
         args += ["--fast", "fp16_accumulation"]
+    args += _parse_comfy_custom_args(s.get("custom_args"))
     return args
 
 

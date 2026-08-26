@@ -469,6 +469,11 @@
                                 <span class="flex items-center gap-2 font-mono text-[11px]"><input type="checkbox" v-model="comfySettings.reserve_vram_enabled" @change="saveComfySettings"> --reserve-vram</span>
                                 <input type="number" min="0" step="0.25" v-model.number="comfySettings.reserve_vram" @change="saveComfySettings" :disabled="!comfySettings.reserve_vram_enabled" class="w-20 rounded border border-zinc-700 bg-zinc-950 px-2 py-1 text-right text-[11px] disabled:opacity-40"><span class="text-[10px] text-zinc-500">GB</span>
                             </label>
+                            <div class="block rounded-md border border-zinc-800 bg-zinc-900/70 px-2.5 py-2">
+                                <div class="flex items-center justify-between gap-2"><span class="font-mono text-[11px] text-zinc-300">Custom arguments</span><button @click="saveComfySettings" :disabled="comfySettingsSaving" class="rounded border border-zinc-700 px-2 py-0.5 text-[9px] text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">저장</button></div>
+                                <textarea v-model="comfySettings.custom_args" @change="saveComfySettings" rows="2" spellcheck="false" placeholder="예: --mmap-torch-files --verbose DEBUG" class="mt-2 w-full resize-y rounded border border-zinc-700 bg-zinc-950 px-2 py-1.5 font-mono text-[10px] leading-relaxed text-zinc-300 outline-none focus:border-indigo-500"></textarea>
+                                <span class="mt-1 block text-[9px] leading-relaxed text-zinc-600">공백과 따옴표를 인자 단위로 해석해 저장합니다. 셸 명령은 실행하지 않습니다.</span>
+                            </div>
                         </div>
                     </div>
 
@@ -1066,6 +1071,7 @@
                         listen: true,
                         use_sage_attention: true,
                         disable_cuda_malloc: true,
+                        disable_pinned_memory: true,
                         preview_method_none: false,
                         cache_none: false,
                         reserve_vram_enabled: true,
@@ -1074,13 +1080,15 @@
                         disable_dynamic_vram: true,
                         fast_disk: false,
                         fast_fp16_accumulation: false,
-                        gpu_device: ''
+                        gpu_device: '',
+                        custom_args: ''
                     },
                     comfySettingsSaving: false,
                     comfyOptionDefs: [
                         { key: 'listen', label: '--listen 0.0.0.0' },
                         { key: 'use_sage_attention', label: '--use-sage-attention' },
                         { key: 'disable_cuda_malloc', label: '--disable-cuda-malloc' },
+                        { key: 'disable_pinned_memory', label: '--disable-pinned-memory' },
                         { key: 'preview_method_none', label: '--preview-method none' },
                         { key: 'cache_none', label: '--cache-none' },
                         { key: 'disable_async_offload', label: '--disable-async-offload' },
@@ -1714,15 +1722,21 @@
                 async saveComfySettings() {
                     this.comfySettingsSaving = true;
                     try {
-                        await fetch('/api/comfy/settings', {
+                        const res = await fetch('/api/comfy/settings', {
                             method: 'POST',
                             headers: { 'Content-Type': 'application/json' },
                             body: JSON.stringify(this.comfySettings)
                         });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                        this.comfySettings = { ...this.comfySettings, ...data };
+                        return true;
                     } catch (e) {
-                        alert('ComfyUI option save failed');
+                        alert('ComfyUI 옵션 저장 실패: ' + e.message);
+                        return false;
+                    } finally {
+                        this.comfySettingsSaving = false;
                     }
-                    this.comfySettingsSaving = false;
                 },
 
                 async forceKill(server) {
@@ -1858,6 +1872,7 @@
                 async controlServer(server, action) {
                     if (server === 'comfyui' && action === 'stop' && !confirm('ComfyUI 작업을 종료하시겠습니까? 진행 중인 생성 작업이 중단될 수 있습니다.')) return;
                     if (server === 'unsloth' && action === 'stop' && !confirm('Unsloth Studio를 종료하시겠습니까? 진행 중인 학습·추론 작업이 중단될 수 있습니다.')) return;
+                    if (server === 'comfyui' && action === 'start' && !(await this.saveComfySettings())) return;
                     this.loading[server] = true;
                     try {
                         const fetchOptions = { method: 'POST' };
