@@ -14,12 +14,27 @@ CONSOLE_BLANK_SECONDS=300
 die() { echo "$*" >&2; exit 2; }
 
 ensure_fstab_entry() {
-  local uuid=$1 target=$2 options=$3 existing
+  local uuid=$1 target=$2 options=$3 existing desired temp_file
   existing=$(awk -v target="$target" '$1 !~ /^#/ && $2 == target { print $1; exit }' /etc/fstab)
   if [[ -n "$existing" ]]; then
     [[ "$existing" == "UUID=$uuid" || "$existing" == "/dev/disk/by-uuid/$uuid" ]] || \
       die "fstab의 $target 대상이 다른 장치에 연결되어 있습니다: $existing"
-    echo "fstab 유지: $target"
+    desired="UUID=$uuid $target ntfs-3g $options 0 0"
+    if ! awk -v target="$target" -v desired="$desired" '
+      $1 !~ /^#/ && $2 == target { found=1; if ($0 != desired) exit 1 }
+      END { if (!found) exit 1 }
+    ' /etc/fstab; then
+      temp_file=$(mktemp)
+      awk -v target="$target" -v desired="$desired" '
+        $1 !~ /^#/ && $2 == target { if (!replaced++) print desired; next }
+        { print }
+      ' /etc/fstab >"$temp_file"
+      cat "$temp_file" >/etc/fstab
+      rm -f "$temp_file"
+      echo "fstab 갱신: UUID=$uuid -> $target"
+    else
+      echo "fstab 유지: $target"
+    fi
     return
   fi
   printf 'UUID=%s %s ntfs-3g %s 0 0\n' "$uuid" "$target" "$options" >>/etc/fstab
@@ -88,17 +103,23 @@ apply_linger() {
 }
 
 apply_model_mounts() {
-  # A mounted NTFS volume can be read-only. Never chmod/chown the mounted root;
-  # only prepare the empty mount directory when it is not mounted yet.
+  # NTFS permissions are defined by mount options. Files are rw for every local
+  # user while directories remain traversable/writable; Windows filename rules
+  # prevent names that cannot be used after rebooting into Windows.
   mountpoint -q "$MODEL_MOUNT" || install -d -o root -g root -m 0755 "$MODEL_MOUNT"
   mountpoint -q "$COMFY_MODEL_MOUNT" || install -d -o root -g root -m 0755 "$COMFY_MODEL_MOUNT"
   ensure_fstab_entry "$MODEL_VOLUME_UUID" "$MODEL_MOUNT" \
-    "uid=$TARGET_UID,gid=$TARGET_GID,umask=0022,windows_names,nofail,x-systemd.device-timeout=10s"
+    "rw,uid=$TARGET_UID,gid=$TARGET_GID,fmask=0111,dmask=0000,windows_names,nofail,x-systemd.device-timeout=10s"
   ensure_fstab_entry "$COMFY_MODEL_VOLUME_UUID" "$COMFY_MODEL_MOUNT" \
-    "ro,uid=$TARGET_UID,gid=$TARGET_GID,umask=0022,nofail,x-systemd.device-timeout=10s"
+    "rw,uid=$TARGET_UID,gid=$TARGET_GID,fmask=0111,dmask=0000,windows_names,nofail,x-systemd.device-timeout=10s"
   systemctl daemon-reload
-  mountpoint -q "$MODEL_MOUNT" || mount "$MODEL_MOUNT"
-  mountpoint -q "$COMFY_MODEL_MOUNT" || mount "$COMFY_MODEL_MOUNT"
+  # ntfs-3g cannot change ro/rw or masks with remount. A busy mount fails
+  # safely here; stop workloads using it and rerun this selected setup action.
+  local target
+  for target in "$MODEL_MOUNT" "$COMFY_MODEL_MOUNT"; do
+    mountpoint -q "$target" && umount "$target"
+    mount "$target"
+  done
   echo "모델 볼륨 고정 마운트 완료"
 }
 

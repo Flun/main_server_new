@@ -50,8 +50,11 @@ actions require a UI confirmation and a matching confirmation header at the
 API boundary.
 
 The same setup mounts the llama model volume at `/mnt/main-server-models` and
-the shared ComfyUI model volume read-only at `/mnt/main-server-comfy`. UUID-based
+the shared ComfyUI model volume at `/mnt/main-server-comfy`, both explicitly
+read/write with UID 1000 ownership and writable file/directory masks. UUID-based
 fstab entries keep both paths stable without relying on a GNOME login or udisks.
+The CIFS NAS mount is also explicitly read/write with `0666` files and `0777`
+directories; the NAS account and server-side ACL remain the final authority.
 
 The GPU helper writes one validated persistent file per GPU UUID under
 `/etc/main-server/gpu-tune.d/`. The legacy index-based

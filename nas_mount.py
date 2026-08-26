@@ -301,7 +301,7 @@ def _mount_linux(configured: dict[str, Any], username: str, password: str) -> No
         stream.write(f"username={username}\npassword={password}\n")
     os.chmod(mount_credentials, 0o600)
     uid, gid = os.getuid(), os.getgid()
-    common = f"credentials={mount_credentials},uid={uid},gid={gid},iocharset=utf8,vers={configured['smb_version']},file_mode=0664,dir_mode=0775,noserverino"
+    common = f"credentials={mount_credentials},rw,uid={uid},gid={gid},iocharset=utf8,vers={configured['smb_version']},file_mode=0666,dir_mode=0777,noserverino"
     main_target = configured["linux_mount"]
     comfy_target = configured["linux_comfy_mount"]
     mounted_main_here = False
