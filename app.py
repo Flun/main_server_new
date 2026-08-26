@@ -61,6 +61,7 @@ services = {
     "bot": Service("bot"),
     "watcher": Service("watcher"),
     "vllm": vllm_service,
+    "unsloth": Service("unsloth"),
 }
 
 STARTED_AT = time.time()
@@ -646,6 +647,29 @@ def _run_dir_python(dir_path, script="main.py"):
     return "python" if IS_WINDOWS else "python3"
 
 
+def _unsloth_executable():
+    configured = os.path.expandvars(os.path.expanduser(str(settings.get("unsloth_executable") or "")))
+    candidates = [configured, shutil.which("unsloth")]
+    if not IS_WINDOWS:
+        candidates += [os.path.expanduser("~/.local/bin/unsloth")]
+    else:
+        candidates += [
+            os.path.join(os.path.expanduser("~"), ".local", "bin", "unsloth.exe"),
+            shutil.which("unsloth.exe"),
+        ]
+    return next((path for path in candidates if path and os.path.isfile(path)), None)
+
+
+def _unsloth_port():
+    try:
+        port = int(settings.get("unsloth_port") or 8890)
+    except (TypeError, ValueError) as error:
+        raise HTTPException(400, "Unsloth 포트가 올바르지 않습니다") from error
+    if not 1 <= port <= 65535:
+        raise HTTPException(400, "Unsloth 포트 범위는 1~65535입니다")
+    return port
+
+
 # ---------- 하드웨어 샘플러 ----------
 
 def _merge_lhm_gpu_temperatures(gpus):
@@ -827,6 +851,15 @@ def _service_state(name):
             st["running"] = True
             st["pid"] = pids[0]
             st["external"] = True
+    if name == "unsloth":
+        executable = _unsloth_executable()
+        st["available"] = bool(executable)
+        if not st["running"]:
+            pids = find_process(r"unsloth(?:\.exe)?\s+studio(?:\s|$)")
+            if pids:
+                st["running"] = True
+                st["pid"] = pids[0]
+                st["external"] = True
     return st
 
 
@@ -874,6 +907,7 @@ def gpus():
         "bot": configured_devices(services["bot"].device or []),
         "watcher": configured_devices(services["watcher"].device or []),
         "vllm": configured_devices(services["vllm"].device or []),
+        "unsloth": configured_devices(services["unsloth"].device or []),
     }
     service_defs = {
             "comfyui": {"label": "ComfyUI", "color": "amber"},
@@ -881,6 +915,7 @@ def gpus():
             "bot": {"label": "봇", "color": "emerald"},
             "watcher": {"label": "와처", "color": "violet"},
             "vllm": {"label": "vLLM", "color": "rose"},
+            "unsloth": {"label": "Unsloth", "color": "lime"},
     }
     topo["services"] = {}
     for name, definition in service_defs.items():
@@ -1959,6 +1994,45 @@ def watcher_stop():
     return {"ok": services["watcher"].stop()}
 
 
+# ---------- Unsloth Studio (headless web server) ----------
+
+@app.post("/api/unsloth/start")
+def unsloth_start():
+    executable = _unsloth_executable()
+    if not executable:
+        raise HTTPException(400, f"Unsloth CLI 실행 파일이 없습니다: {settings.get('unsloth_executable')}")
+    port = _unsloth_port()
+    cmd = [
+        executable, "studio", "--host", "0.0.0.0", "--port", str(port),
+        "--no-cloudflare",
+    ]
+    pid = services["unsloth"].start(
+        cmd,
+        cwd=os.path.expanduser("~"),
+        env={"PYTHONUNBUFFERED": "1", "PYTHONIOENCODING": "utf-8"},
+    )
+    deadline = time.monotonic() + 15
+    while time.monotonic() < deadline:
+        if not services["unsloth"].running():
+            detail = "\n".join(tail(services["unsloth"].log_file, 30))
+            raise HTTPException(500, detail or "Unsloth Studio가 시작 직후 종료되었습니다")
+        try:
+            response = requests.get(f"http://127.0.0.1:{port}/api/health", timeout=0.5)
+            if response.status_code < 500:
+                return {"ok": True, "pid": pid, "port": port, "headless": True}
+        except requests.RequestException:
+            pass
+        time.sleep(0.25)
+    return {"ok": True, "pid": pid, "port": port, "headless": True, "starting": True}
+
+
+@app.post("/api/unsloth/stop")
+def unsloth_stop(request: Request):
+    if request.headers.get("X-Unsloth-Stop-Confirm") != "confirmed":
+        raise HTTPException(409, "Unsloth 작업 종료 확인이 필요합니다")
+    return {"ok": services["unsloth"].stop()}
+
+
 # ---------- 메모 / 로그 / 프리셋 ----------
 
 @app.get("/api/memo")
@@ -2481,6 +2555,7 @@ def _folder_for(target):
         "comfy_output": os.path.join(settings.get("comfyui_dir"), "output"),
         "bot": settings.get("bot_dir"),
         "watcher": settings.get("watcher_dir"),
+        "unsloth": os.path.expanduser("~/.unsloth"),
         "logs": os.path.join(BASE_DIR, "logs"),
         "vllm": settings.get("vllm_env"),
         "base": BASE_DIR,
@@ -2810,6 +2885,7 @@ def _auto_start_services():
         ("autostart_bot", "bot"),
         ("autostart_watcher", "watcher"),
         ("autostart_vllm", "vllm"),
+        ("autostart_unsloth", "unsloth"),
     ]
     any_set = any(settings.get(k) for k, _ in keys)
     for key, name in keys:
@@ -2836,6 +2912,8 @@ def _auto_start_services():
                 cmd, runtime_env = build_vllm_command(configured)
                 devices = [item.strip() for item in str(configured.get("gpu_devices") or "").split(",") if item.strip()]
                 services["vllm"].start(cmd, env=runtime_env, device=devices or None)
+            elif name == "unsloth":
+                unsloth_start()
         except Exception:
             pass
     if not any_set:

@@ -35,6 +35,13 @@ Windows uses winget packages `Git.Git` and `GitHub.cli`. Device authentication
 shows only the one-time code and GitHub URL in the dashboard. The user approves
 that code directly on GitHub, after which `gh auth setup-git` runs automatically.
 
+An installed Unsloth Desktop is managed through its separate `unsloth studio`
+CLI rather than the graphical Tauri shell. main_server binds the bundled web
+frontend to `0.0.0.0:8890`, avoiding the Watcher service on port 8888. This path
+has no display-server dependency, so it starts under the login-free systemd user
+service during CLI boot. The main dashboard provides manual start/stop, logs,
+Web UI access, and an independent `autostart_unsloth` checkbox.
+
 The main-page power menu consolidates AI service termination, Ubuntu GUI/CLI
 switching, safe Git fast-forward updates, manager restart/stop, one-shot OS
 switching, and host restart/shutdown. The root OS helper schedules reboot or

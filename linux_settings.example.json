@@ -7,7 +7,10 @@
   "llama_version_glob": "/opt/llama-*",
   "llama_port": "8080",
   "model_root": "/mnt/main-server-models/model",
+  "unsloth_executable": "/home/flux/.local/bin/unsloth",
+  "unsloth_port": "8890",
   "bot_dir": "/opt/comfy_bridge",
   "watcher_dir": "/home/flux/Documents/New project",
-  "autostart": false
+  "autostart": false,
+  "autostart_unsloth": false
 }

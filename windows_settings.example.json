@@ -10,6 +10,8 @@
   "vllm_env": "C:\\vllm-env",
   "vllm_dflash_env": "C:\\vllm-dflash-env",
   "vllm_port": "8000",
+  "unsloth_executable": "C:\\Users\\<user>\\.local\\bin\\unsloth.exe",
+  "unsloth_port": "8890",
   "bot_dir": "C:\\Users\\<user>\\comfy_bridge",
   "watcher_dir": "C:\\Users\\<user>\\Documents\\New project",
   "autostart": false,
@@ -18,5 +20,6 @@
   "autostart_bot": false,
   "autostart_watcher": false,
   "autostart_vllm": false,
+  "autostart_unsloth": false,
   "gpu_tuning_enabled": true
 }
