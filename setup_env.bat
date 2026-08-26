@@ -1,6 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0"
+where winget >nul 2>nul || (echo [Error] winget is required. Install Microsoft App Installer. & exit /b 1)
+where git >nul 2>nul
+if errorlevel 1 winget install --id Git.Git --exact --source winget --accept-package-agreements --accept-source-agreements --silent || exit /b 1
+where gh >nul 2>nul
+if errorlevel 1 winget install --id GitHub.cli --exact --source winget --accept-package-agreements --accept-source-agreements --silent || exit /b 1
 where python >nul 2>nul || (echo [Error] Python is not installed or not in PATH & exit /b 1)
 if not exist .venv (
   echo Creating venv...

@@ -26,6 +26,7 @@ from config import BASE_DIR, DEFAULTS, settings
 from comfy_model_paths import ModelPathError, default_model_root, ensure_model_config, resolve_model_root
 import nas_mount
 import linux_setup
+import git_setup
 from process_mgr import Service, tail
 
 
@@ -386,6 +387,7 @@ def runtime_status() -> dict[str, Any]:
         "settings": configured,
         "nas": nas_mount.status(),
         "linux_setup": linux_setup.status(),
+        "git_setup": git_setup.status(),
         "service": vllm_service.info(),
         "stable": {"installed": bool(stable_version), "version": stable_version, "compatible": stable_version == VLLM_COMPAT_VERSION},
         "dflash": {"installed": bool(dflash_version), "version": dflash_version, "experimental": True},
@@ -963,6 +965,27 @@ def infrastructure_linux_setup_apply(values: dict[str, Any]):
     try:
         state = linux_setup.start(values)
         return {"ok": True, "state": state}
+    except RuntimeError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.get("/git-setup")
+def infrastructure_git_setup_get():
+    return git_setup.status()
+
+
+@router.post("/git-setup/install")
+def infrastructure_git_setup_install():
+    try:
+        return {"ok": True, "state": git_setup.start_install()}
+    except RuntimeError as error:
+        raise HTTPException(400, str(error)) from error
+
+
+@router.post("/git-setup/auth")
+def infrastructure_git_setup_auth():
+    try:
+        return {"ok": True, "state": git_setup.start_auth()}
     except RuntimeError as error:
         raise HTTPException(400, str(error)) from error
 

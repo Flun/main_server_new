@@ -71,7 +71,7 @@ sudo chmod 0440 /etc/sudoers.d/main-server-linux-setup
 sudo /usr/sbin/visudo -cf /etc/sudoers.d/main-server-linux-setup
 
 echo "로그인 없는 CLI 서버 환경 일괄 적용..."
-sudo /usr/local/sbin/main-server-linux-setup apply cli_boot console_blank ssh linger model_mounts nas
+sudo /usr/local/sbin/main-server-linux-setup apply git_tools cli_boot console_blank ssh linger model_mounts nas
 
 if [ ! -d .venv ]; then
   echo "venv 생성..."
