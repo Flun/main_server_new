@@ -1,6 +1,7 @@
 import glob
 import json
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -84,9 +85,23 @@ STATE = {
     "hw": {
         "gpus": [],
         "cpu_percent": 0.0,
+        "cpu_model": "",
+        "cpu_physical_cores": None,
+        "cpu_logical_cores": None,
+        "cpu_frequency_mhz": None,
+        "cpu_frequency_max_mhz": None,
+        "cpu_load_average": [None, None, None],
+        "cpu_package_temp": None,
+        "process_count": 0,
         "ram_total": 0,
         "ram_used": 0,
+        "ram_available": 0,
+        "ram_cached": 0,
+        "ram_buffers": 0,
         "ram_percent": 0.0,
+        "swap_total": 0,
+        "swap_used": 0,
+        "swap_percent": 0.0,
         "vram_procs": [],
         "time": 0.0,
     },
@@ -124,6 +139,7 @@ GPU_HBM_WARNING_C = 85
 GPU_THERMAL_EVENT_LIMIT = 500
 _thermal_event_lock = threading.Lock()
 _active_thermal_events = {}
+_CPU_MODEL = None
 
 
 def _load_gpu_thermal_events():
@@ -672,6 +688,47 @@ def _unsloth_port():
 
 # ---------- 하드웨어 샘플러 ----------
 
+def _cpu_model_name():
+    global _CPU_MODEL
+    if _CPU_MODEL is not None:
+        return _CPU_MODEL
+    model = ""
+    if not IS_WINDOWS:
+        try:
+            with open("/proc/cpuinfo", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    if line.lower().startswith("model name"):
+                        model = line.split(":", 1)[1].strip()
+                        break
+        except OSError:
+            pass
+    if not model:
+        model = platform.processor().strip()
+    _CPU_MODEL = model or "Unknown CPU"
+    return _CPU_MODEL
+
+
+def _cpu_package_temperature():
+    """Read the most representative package sensor from psutil/sysfs."""
+    if IS_WINDOWS or not hasattr(psutil, "sensors_temperatures"):
+        return None
+    try:
+        sensors = psutil.sensors_temperatures()
+    except Exception:
+        return None
+    priorities = (
+        ("k10temp", ("tctl", "tdie")),
+        ("coretemp", ("package id 0", "package")),
+        ("nct6798", ("cputin",)),
+        ("asusec", ("cpu",)),
+    )
+    normalized = {str(chip).casefold(): entries for chip, entries in sensors.items()}
+    for chip, labels in priorities:
+        for entry in normalized.get(chip, []):
+            if str(entry.label or "").casefold() in labels and 0 < float(entry.current) < 125:
+                return round(float(entry.current), 1)
+    return None
+
 def _merge_lhm_gpu_temperatures(gpus):
     """Fill consumer GPU memory-junction temperatures missing from NVML."""
     if not IS_WINDOWS or not gpus:
@@ -700,12 +757,35 @@ def _sample_hw():
     sampled_at = time.time()
     cpu = psutil.cpu_percent(interval=None)
     vm = psutil.virtual_memory()
+    swap = psutil.swap_memory()
+    try:
+        frequency = psutil.cpu_freq()
+    except Exception:
+        frequency = None
+    try:
+        load_average = psutil.getloadavg() if hasattr(psutil, "getloadavg") else (None, None, None)
+    except Exception:
+        load_average = (None, None, None)
     STATE["hw"] = {
         "gpus": gpus,
         "cpu_percent": cpu,
+        "cpu_model": _cpu_model_name(),
+        "cpu_physical_cores": psutil.cpu_count(logical=False),
+        "cpu_logical_cores": psutil.cpu_count(logical=True),
+        "cpu_frequency_mhz": round(frequency.current) if frequency else None,
+        "cpu_frequency_max_mhz": round(frequency.max) if frequency and frequency.max else None,
+        "cpu_load_average": [round(value, 2) if value is not None else None for value in load_average],
+        "cpu_package_temp": _cpu_package_temperature(),
+        "process_count": len(psutil.pids()),
         "ram_total": vm.total,
         "ram_used": vm.used,
+        "ram_available": vm.available,
+        "ram_cached": getattr(vm, "cached", 0),
+        "ram_buffers": getattr(vm, "buffers", 0),
         "ram_percent": vm.percent,
+        "swap_total": swap.total,
+        "swap_used": swap.used,
+        "swap_percent": swap.percent,
         "vram_procs": processes,
         "time": sampled_at,
     }

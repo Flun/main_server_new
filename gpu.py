@@ -68,6 +68,7 @@ def _nvml_backend():
             clock_graphics = None
             clock_max_graphics = None
             fan_speed = None
+            temp_memory = None
             try:
                 power = pynvml.nvmlDeviceGetPowerUsage(h) / 1000.0
             except Exception:
@@ -92,6 +93,14 @@ def _nvml_backend():
                 pass
             try:
                 fan_speed = pynvml.nvmlDeviceGetFanSpeed(h)
+            except Exception:
+                pass
+            try:
+                memory_field = pynvml.nvmlDeviceGetFieldValues(
+                    h, [pynvml.NVML_FI_DEV_MEMORY_TEMP]
+                )[0]
+                if memory_field.nvmlReturn == pynvml.NVML_SUCCESS:
+                    temp_memory = int(memory_field.value.uiVal)
             except Exception:
                 pass
             try:
@@ -126,6 +135,7 @@ def _nvml_backend():
                     "clock_graphics": clock_graphics,
                     "clock_max_graphics": clock_max_graphics,
                     "fan_speed": fan_speed,
+                    "temp_memory": temp_memory,
                 }
             )
     except Exception:
@@ -214,12 +224,19 @@ def get_gpus():
         if gpus:
             extended = _extended_nvidia_sensors()
             for gpu in gpus:
-                gpu.update(extended.get(gpu.get("uuid"), {
+                sensor_values = extended.get(gpu.get("uuid"), {
                     "temp_memory": None, "memory_controller_util": None,
                     "clock_memory": None, "pcie_gen_current": None,
                     "pcie_width_current": None, "pcie_gen_max": None,
                     "pcie_width_max": None,
-                }))
+                })
+                # Some driver/GPU combinations expose junction temperature only
+                # through the NVML field API, while others expose it to
+                # nvidia-smi. Keep whichever backend returned a real value.
+                for key, value in sensor_values.items():
+                    if value is not None or gpu.get(key) is None:
+                        gpu[key] = value
+                gpu["temp_memory_supported"] = gpu.get("temp_memory") is not None
             return gpus
     return []
 

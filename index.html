@@ -135,12 +135,26 @@
             </div>
             <div class="mt-4 grid gap-3 md:grid-cols-2">
                 <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
-                    <div class="flex items-end justify-between"><span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">CPU</span><span class="font-mono text-lg font-semibold text-zinc-100">{{ hw.cpu.toFixed(1) }}%</span></div>
+                    <div class="flex items-end justify-between gap-3"><div class="min-w-0"><span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">CPU</span><div class="mt-0.5 truncate text-[10px] text-zinc-600" :title="hw.cpu_model">{{ hw.cpu_model || '프로세서 정보 확인 중' }}</div></div><span class="shrink-0 font-mono text-lg font-semibold text-zinc-100">{{ hw.cpu.toFixed(1) }}%</span></div>
                     <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full bg-indigo-500 transition-all duration-500" :style="{width: hw.cpu + '%'}"></div></div>
+                    <div class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] sm:grid-cols-3">
+                        <div><span class="text-zinc-600">코어</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.cpu_physical_cores ?? '--' }}C / {{ hw.cpu_logical_cores ?? '--' }}T</div></div>
+                        <div><span class="text-zinc-600">클럭</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.cpu_frequency_mhz != null ? (hw.cpu_frequency_mhz / 1000).toFixed(2) + ' GHz' : '--' }}</div></div>
+                        <div><span class="text-zinc-600">Package</span><div class="mt-0.5 font-mono" :class="getColor(hw.cpu_package_temp)">{{ hw.cpu_package_temp != null ? hw.cpu_package_temp + '°C' : '--' }}</div></div>
+                        <div class="col-span-2"><span class="text-zinc-600">Load 1 / 5 / 15m</span><div class="mt-0.5 font-mono text-zinc-300">{{ (hw.cpu_load_average || []).map(v => v ?? '--').join(' / ') }}</div></div>
+                        <div><span class="text-zinc-600">프로세스</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.process_count ?? '--' }}</div></div>
+                    </div>
                 </div>
                 <div class="rounded-lg border border-zinc-800 bg-zinc-950/40 p-3">
                     <div class="flex items-end justify-between"><span class="text-[11px] font-semibold uppercase tracking-wider text-zinc-500">System Memory <span class="ml-1 font-normal normal-case text-zinc-600">{{ hw.ram_used }} / {{ hw.ram_total }} GB</span></span><span class="font-mono text-lg font-semibold text-zinc-100">{{ hw.ram.toFixed(1) }}%</span></div>
                     <div class="mt-2 h-1.5 overflow-hidden rounded-full bg-zinc-800"><div class="h-full rounded-full bg-emerald-500 transition-all duration-500" :style="{width: hw.ram + '%'}"></div></div>
+                    <div class="mt-3 grid grid-cols-2 gap-x-4 gap-y-1.5 text-[10px] sm:grid-cols-3">
+                        <div><span class="text-zinc-600">사용 가능</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.ram_available }} GB</div></div>
+                        <div><span class="text-zinc-600">캐시</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.ram_cached }} GB</div></div>
+                        <div><span class="text-zinc-600">버퍼</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.ram_buffers }} GB</div></div>
+                        <div class="col-span-2"><span class="text-zinc-600">Swap</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.swap_used }} / {{ hw.swap_total }} GB</div></div>
+                        <div><span class="text-zinc-600">Swap 사용률</span><div class="mt-0.5 font-mono text-zinc-300">{{ hw.swap_percent.toFixed(1) }}%</div></div>
+                    </div>
                 </div>
             </div>
             <div v-if="!gpuTopology.available" class="mt-4 rounded-lg border border-dashed border-zinc-700 px-4 py-5 text-center text-xs text-zinc-500">NVIDIA GPU 정보를 기다리는 중입니다.</div>
@@ -163,7 +177,7 @@
                     </div>
                     <div class="mt-3 grid grid-cols-2 gap-px overflow-hidden rounded-lg bg-zinc-800 sm:grid-cols-6">
                         <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">CORE TEMP</div><div class="mt-0.5 font-mono text-xs" :class="getColor(gpu.temp)">{{ gpu.temp != null ? gpu.temp + '°C' : '--' }}</div></div>
-                        <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">MEMORY TEMP</div><div class="mt-0.5 font-mono text-xs" :class="gpu.temp_memory > 85 ? 'text-rose-400' : gpu.temp_memory != null ? 'text-emerald-400' : 'text-zinc-600'">{{ gpu.temp_memory != null ? gpu.temp_memory + '°C' : '--' }}</div></div>
+                        <div class="bg-zinc-900 px-2 py-2" :title="gpu.temp_memory_supported === false ? '현재 NVIDIA Linux 드라이버가 이 GPU의 메모리 접합 온도를 제공하지 않습니다.' : ''"><div class="text-[9px] text-zinc-600">MEMORY TEMP</div><div class="mt-0.5 font-mono text-xs" :class="gpu.temp_memory > 85 ? 'text-rose-400' : gpu.temp_memory != null ? 'text-emerald-400' : 'text-zinc-600'">{{ gpu.temp_memory != null ? gpu.temp_memory + '°C' : gpu.temp_memory_supported === false ? '미지원' : '--' }}</div></div>
                         <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">POWER</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.power != null ? gpu.power.toFixed(0) : '--' }} / {{ gpu.power_max != null ? gpu.power_max.toFixed(0) : '--' }} W</div></div>
                         <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">FAN / MEM CTRL</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.fan_speed != null ? gpu.fan_speed + '%' : '--' }} / {{ gpu.memory_controller_util != null ? gpu.memory_controller_util + '%' : '--' }}</div></div>
                         <div class="bg-zinc-900 px-2 py-2"><div class="text-[9px] text-zinc-600">CORE / MEM CLOCK</div><div class="mt-0.5 whitespace-nowrap font-mono text-xs text-zinc-300">{{ gpu.clock_graphics ?? '--' }} / {{ gpu.clock_memory ?? '--' }}</div></div>
@@ -215,38 +229,37 @@
             </div>
             <div v-if="gpuTuning.available" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">{{ isWindows ? 'GPU 전력 / 코어 클럭 / 팬' : 'GPU 전력 / 코어 클럭' }}</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. Core max는 고정 클럭이 아니라 부스트 상한이며 idle에서는 자동으로 다운클럭됩니다.</p><p v-if="!autoStart.gpu_tuning_enabled" class="mt-1 text-[11px] text-amber-500">GPU 튜닝이 꺼져 있어 부팅 시 저장된 값이 재적용되지 않습니다 (MSI Afterburner 등 외부 도구 사용 시 권장).</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
+                    <div class="min-w-0 flex-1"><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">{{ isWindows ? 'GPU 전력 / 코어 클럭 / 팬' : 'GPU 전력 / 코어 클럭' }}</h3><div v-if="!gpuTuningExpanded" class="mt-2 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-zinc-500"><span v-for="gpu in gpuTuning.gpus" :key="'tuning-summary-'+gpu.uuid" class="whitespace-nowrap"><b class="font-medium text-zinc-300">GPU {{ gpu.index }}</b> {{ gpu.power_draw ?? '--' }}W · Core {{ gpu.clock_current ?? '--' }}MHz · 설정 {{ gpu.configured?.enabled ? `${gpu.configured.power_limit}W / ${gpu.configured.clock_max}MHz` : gpu.configured?.enabled === false ? '꺼짐' : '미설정' }}</span></div><template v-else><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. Core max는 고정 클럭이 아니라 부스트 상한이며 idle에서는 자동으로 다운클럭됩니다.</p><p v-if="!autoStart.gpu_tuning_enabled" class="mt-1 text-[11px] text-amber-500">GPU 튜닝이 꺼져 있어 부팅 시 저장된 값이 재적용되지 않습니다 (MSI Afterburner 등 외부 도구 사용 시 권장).</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></template></div>
                     <div class="flex items-center gap-3">
-                        <label class="flex cursor-pointer select-none items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-colors" :class="autoStart.gpu_tuning_enabled ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-300' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'"><input type="checkbox" v-model="autoStart.gpu_tuning_enabled" @change="saveAutoStart"> GPU 튜닝 사용</label>
-                        <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">{{ gpuTuning.service === 'manager-autostart' ? '매니저 시작 시 적용' : 'systemd 적용' }}</span>
-                        <span v-if="gpuTuning.persistence" class="rounded border px-2 py-1 text-[10px]" :class="gpuTuning.persistence.status === 'ready' ? 'border-emerald-500/20 text-emerald-400' : gpuTuning.persistence.status === 'retrying' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-700 text-zinc-500'">{{ gpuTuning.persistence.status === 'ready' ? `부팅 재적용 완료 (${gpuTuning.persistence.applied})` : gpuTuning.persistence.status === 'retrying' ? '부팅 재적용 재시도 중' : gpuTuning.persistence.status === 'disabled' ? '재적용 꺼짐' : '재적용 대기' }}</span>
+                        <template v-if="gpuTuningExpanded"><label class="flex cursor-pointer select-none items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-colors" :class="autoStart.gpu_tuning_enabled ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-300' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'"><input type="checkbox" v-model="autoStart.gpu_tuning_enabled" @change="saveAutoStart"> GPU 튜닝 사용</label><span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">{{ gpuTuning.service === 'manager-autostart' ? '매니저 시작 시 적용' : 'systemd 적용' }}</span><span v-if="gpuTuning.persistence" class="rounded border px-2 py-1 text-[10px]" :class="gpuTuning.persistence.status === 'ready' ? 'border-emerald-500/20 text-emerald-400' : gpuTuning.persistence.status === 'retrying' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-700 text-zinc-500'">{{ gpuTuning.persistence.status === 'ready' ? `부팅 재적용 완료 (${gpuTuning.persistence.applied})` : gpuTuning.persistence.status === 'retrying' ? '부팅 재적용 재시도 중' : gpuTuning.persistence.status === 'disabled' ? '재적용 꺼짐' : '재적용 대기' }}</span></template>
+                        <button @click="gpuTuningExpanded=!gpuTuningExpanded" class="shrink-0 rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">{{ gpuTuningExpanded ? '접기' : '펼치기' }}</button>
                     </div>
                 </div>
-                <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:items-end" :class="isWindows ? 'lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto]' : 'lg:grid-cols-[minmax(180px,1fr)_130px_150px_auto]'">
+                <div v-if="gpuTuningExpanded"><div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:items-end" :class="isWindows ? 'lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto]' : 'lg:grid-cols-[minmax(180px,1fr)_130px_150px_auto]'">
                     <div><div class="flex flex-wrap items-center gap-2"><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.profile === 'cmp_170hx' ? 'CMP 170HX' : gpu.name }}</div><span class="rounded border px-1.5 py-0.5 text-[9px]" :class="gpu.configured?.enabled === false ? 'border-zinc-700 text-zinc-500' : gpu.configured?.enabled ? 'border-indigo-500/30 text-indigo-300' : 'border-zinc-800 text-zinc-600'">{{ gpu.configured?.enabled === false ? '적용 꺼짐' : gpu.configured?.enabled ? '부팅 적용' : '미설정' }}</span></div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · Core {{ gpu.clock_current ?? '--' }}MHz · Memory {{ gpu.memory_clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
                     <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" :disabled="!autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
                     <label class="text-[10px] text-zinc-500">Core max (idle 자동)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" :disabled="!autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
                     <label v-if="isWindows" class="text-[10px] text-zinc-500">Fan (0=자동, 20–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported || !autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
                     <div class="flex flex-wrap gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">권장 기본값</button><button @click="disableGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled || gpu.configured?.enabled === false" class="rounded border border-zinc-800 px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 disabled:opacity-40">적용 끄기</button></div>
-                </div>
+                </div></div>
             </div>
             <div v-if="motherboardFans.platform" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div>
+                    <div class="min-w-0 flex-1">
                         <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">메인보드 팬 / GPU HBM 연동</h3>
-                        <p class="mt-1 text-[11px] text-zinc-600">선택한 메인보드 PWM 채널을 GPU 메모리 온도에 따라 제어합니다. 15초 lease가 끊기면 메인보드 기본 모드로 자동 복귀합니다.</p>
-                        <p v-if="motherboardFans.message" class="mt-1 text-[11px]" :class="motherboardFans.conflict ? 'text-amber-400' : 'text-zinc-500'">{{ motherboardFans.message }}</p>
+                        <template v-if="motherboardFansExpanded"><p class="mt-1 text-[11px] text-zinc-600">선택한 메인보드 PWM 채널을 GPU 메모리 온도에 따라 제어합니다. 15초 lease가 끊기면 메인보드 기본 모드로 자동 복귀합니다.</p><p v-if="motherboardFans.message" class="mt-1 text-[11px]" :class="motherboardFans.conflict ? 'text-amber-400' : 'text-zinc-500'">{{ motherboardFans.message }}</p></template>
                     </div>
                     <div class="flex flex-wrap items-center gap-2 text-[10px]">
                         <span class="rounded border px-2 py-1" :class="motherboardFans.runtime?.active ? 'border-emerald-500/30 bg-emerald-500/10 text-emerald-300' : 'border-zinc-700 text-zinc-500'">
-                            <template v-if="motherboardFans.runtime?.control_mode === 'manual'">{{ motherboardFans.runtime?.active ? `수동 ${manualFanName} → ${motherboardFans.runtime.target_percent}%` : '수동 대기' }}</template>
-                            <template v-else><template v-if="motherboardFans.runtime?.profiles?.gpu?.active">GPU HBM {{ motherboardFans.runtime.profiles.gpu.temperature ?? '--' }}°C → {{ motherboardFans.runtime.profiles.gpu.target_percent }}% · {{ motherboardFans.runtime.profiles.gpu.curve_mode === 'step' ? '계단식' : '선형' }}<template v-if="motherboardFans.runtime.profiles.gpu.target_percent !== motherboardFans.runtime.profiles.gpu.calculated_percent"> (계산 {{ motherboardFans.runtime.profiles.gpu.calculated_percent }}% · {{ motherboardFans.runtime.profiles.gpu.hold_reason === 'hysteresis' ? '히스테리시스 대기' : `감속 ${motherboardFans.runtime.profiles.gpu.down_delay_remaining}초` }})</template></template><template v-else>GPU 자동 꺼짐</template></template>
+                            <template v-if="motherboardFans.runtime?.control_mode === 'manual'">{{ motherboardFans.runtime?.active ? `수동 ${manualFanName} → ${motherboardFans.runtime.target_percent}% · ${fanChannelSummary(motherboardFans.runtime.manual_channel_id)}` : '수동 대기' }}</template>
+                            <template v-else><template v-if="motherboardFans.runtime?.profiles?.gpu?.active">GPU HBM {{ motherboardFans.runtime.profiles.gpu.temperature ?? '--' }}°C → {{ motherboardFans.runtime.profiles.gpu.target_percent }}% · {{ fanChannelSummary(motherboardFans.runtime.profiles.gpu.channel_id) }}<template v-if="motherboardFansExpanded"> · {{ motherboardFans.runtime.profiles.gpu.curve_mode === 'step' ? '계단식' : '선형' }}<template v-if="motherboardFans.runtime.profiles.gpu.target_percent !== motherboardFans.runtime.profiles.gpu.calculated_percent"> (계산 {{ motherboardFans.runtime.profiles.gpu.calculated_percent }}% · {{ motherboardFans.runtime.profiles.gpu.hold_reason === 'hysteresis' ? '히스테리시스 대기' : `감속 ${motherboardFans.runtime.profiles.gpu.down_delay_remaining}초` }})</template></template></template><template v-else>GPU 자동 꺼짐</template></template>
                         </span>
-                        <span v-if="motherboardFans.runtime?.control_mode !== 'manual' && motherboardFans.runtime?.profiles?.cpu?.active" class="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-sky-300">CPU {{ motherboardFans.runtime.profiles.cpu.temperature ?? '--' }}°C → {{ motherboardFans.runtime.profiles.cpu.target_percent }}%</span>
-                        <span v-if="motherboardFans.pawnio_version" class="rounded border border-zinc-700 px-2 py-1 text-zinc-500">PawnIO {{ motherboardFans.pawnio_version }}</span>
+                        <span v-if="motherboardFans.runtime?.control_mode !== 'manual' && motherboardFans.runtime?.profiles?.cpu?.active" class="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-sky-300">CPU {{ motherboardFans.runtime.profiles.cpu.temperature ?? '--' }}°C → {{ motherboardFans.runtime.profiles.cpu.target_percent }}% · {{ fanChannelSummary(motherboardFans.runtime.profiles.cpu.channel_id) }}</span>
+                        <span v-if="motherboardFansExpanded && motherboardFans.pawnio_version" class="rounded border border-zinc-700 px-2 py-1 text-zinc-500">PawnIO {{ motherboardFans.pawnio_version }}</span>
+                        <button @click="motherboardFansExpanded=!motherboardFansExpanded" class="shrink-0 rounded border border-zinc-700 bg-zinc-800/60 px-2.5 py-1 text-[10px] text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200">{{ motherboardFansExpanded ? '접기' : '펼치기' }}</button>
                     </div>
                 </div>
-                <div class="mt-3 inline-flex rounded-lg border border-zinc-700 bg-zinc-900 p-1">
+                <div v-if="motherboardFansExpanded"><div class="mt-3 inline-flex rounded-lg border border-zinc-700 bg-zinc-900 p-1">
                     <button @click="setMotherboardFanMode('auto')" :disabled="motherboardFanSaving || !motherboardFans.available" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode !== 'manual' ? 'bg-indigo-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'">자동 운전</button>
                     <button @click="setMotherboardFanMode('manual')" :disabled="motherboardFanSaving || motherboardFans.conflict || !motherboardFans.available" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode === 'manual' ? 'bg-amber-500 text-zinc-950 shadow' : 'text-zinc-400 hover:text-zinc-200'">수동 팬 찾기</button>
                 </div>
@@ -342,7 +355,7 @@
                         </div>
                     </div>
                   </div>
-                </div>
+                </div></div>
             </div>
         </section>
 
@@ -1017,6 +1030,9 @@
                 return {
                     hw: {
                         cpu: 0, ram: 0, ram_used: 0, ram_total: 0, gpu: 0, vram: 0, vram_used: 0, vram_total: 0,
+                        cpu_model: '', cpu_physical_cores: null, cpu_logical_cores: null, cpu_frequency_mhz: null, cpu_frequency_max_mhz: null,
+                        cpu_load_average: [null, null, null], cpu_package_temp: null, process_count: 0,
+                        ram_available: 0, ram_cached: 0, ram_buffers: 0, swap_used: 0, swap_total: 0, swap_percent: 0,
                         cpu_temp: null, cpu_core_temps: [], cpu_fan: null, cpu_power: null,
                         ram_temp: null,
                         gpu_temp: null, gpu_hotspot: null, gpu_fan: null, gpu_power: null,
@@ -1037,6 +1053,7 @@
                     motherboardFanSaving: false, motherboardFanManualChannel: '', motherboardFanManualPercent: 60, motherboardFanEditLoaded: false,
                     gpuThermalEvents: { threshold_c: 85, counts: {}, events: [] },
                     expandedGpus: {},
+                    gpuTuningExpanded: false, motherboardFansExpanded: false,
                     managerService: { enabled: false },
                     servicePorts: { comfyui: 8188, llama: 8080, vllm: 8000, unsloth: 8890 },
                     unslothAvailable: false,
@@ -1146,6 +1163,18 @@
                     if (!path) return "";
                     const parts = String(path).split(/[\\/]/);
                     return parts[parts.length - 1] || path;
+                },
+                fanChannelSummary(channelId) {
+                    if (!channelId) return '채널 -- · RPM --';
+                    const fan = (this.motherboardFans.channels || []).find(item => item.id === channelId);
+                    if (!fan) return `${channelId} · RPM --`;
+                    const configuredLabel = channelId === this.motherboardFans.settings?.channel_id
+                        ? this.motherboardFans.settings?.channel_label
+                        : channelId === this.motherboardFans.settings?.cpu?.channel_id
+                            ? this.motherboardFans.settings?.cpu?.channel_label
+                            : '';
+                    const label = configuredLabel || fan.name || channelId;
+                    return `${label} · ${fan.rpm != null ? Math.round(fan.rpm) + ' RPM' : 'RPM --'}`;
                 },
 
                 assetCuda(name) {
@@ -1509,9 +1538,23 @@
                         const g = gpus[0] || {};
                         this.hw = {
                             cpu: d.cpu_percent ?? 0,
+                            cpu_model: d.cpu_model || '',
+                            cpu_physical_cores: d.cpu_physical_cores ?? null,
+                            cpu_logical_cores: d.cpu_logical_cores ?? null,
+                            cpu_frequency_mhz: d.cpu_frequency_mhz ?? null,
+                            cpu_frequency_max_mhz: d.cpu_frequency_max_mhz ?? null,
+                            cpu_load_average: Array.isArray(d.cpu_load_average) ? d.cpu_load_average : [null, null, null],
+                            cpu_package_temp: d.cpu_package_temp ?? null,
+                            process_count: d.process_count ?? 0,
                             ram: d.ram_percent ?? 0,
                             ram_used: +((d.ram_used || 0) / 1073741824).toFixed(1),
                             ram_total: +((d.ram_total || 0) / 1073741824).toFixed(1),
+                            ram_available: +((d.ram_available || 0) / 1073741824).toFixed(1),
+                            ram_cached: +((d.ram_cached || 0) / 1073741824).toFixed(1),
+                            ram_buffers: +((d.ram_buffers || 0) / 1073741824).toFixed(1),
+                            swap_used: +((d.swap_used || 0) / 1073741824).toFixed(1),
+                            swap_total: +((d.swap_total || 0) / 1073741824).toFixed(1),
+                            swap_percent: d.swap_percent ?? 0,
                             gpu: g.util ?? 0,
                             vram: g.mem_util ?? 0,
                             vram_used: +((g.vram_used || 0) / 1024).toFixed(1),
