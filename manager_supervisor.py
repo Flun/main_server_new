@@ -48,6 +48,9 @@ def main() -> int:
     # app.py background initialization, so no fixed boot delay is required.
     time.sleep(0.5)
     while True:
+        if os.path.isfile(os.path.join(BASE_DIR, ".manager-stop")):
+            time.sleep(5)
+            continue
         if _manager_online():
             time.sleep(5)
             continue

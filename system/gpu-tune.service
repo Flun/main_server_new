@@ -1,5 +1,5 @@
 [Unit]
-Description=GPU auto tune (power limit / clock / fan)
+Description=GPU auto tune (power limit / clock)
 After=graphical.target multi-user.target
 
 [Service]

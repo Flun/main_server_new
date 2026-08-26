@@ -1,0 +1,126 @@
+#!/usr/bin/env bash
+# Root-owned, allowlisted Ubuntu bootstrap actions for main_server.
+set -euo pipefail
+
+TARGET_USER=flux
+TARGET_UID=1000
+TARGET_GID=1000
+MODEL_VOLUME_UUID=4CF89226F8920E78
+COMFY_MODEL_VOLUME_UUID=06ECC18DECC17787
+MODEL_MOUNT=/mnt/main-server-models
+COMFY_MODEL_MOUNT=/mnt/main-server-comfy
+CONSOLE_BLANK_SECONDS=300
+
+die() { echo "$*" >&2; exit 2; }
+
+ensure_fstab_entry() {
+  local uuid=$1 target=$2 options=$3 existing
+  existing=$(awk -v target="$target" '$1 !~ /^#/ && $2 == target { print $1; exit }' /etc/fstab)
+  if [[ -n "$existing" ]]; then
+    [[ "$existing" == "UUID=$uuid" || "$existing" == "/dev/disk/by-uuid/$uuid" ]] || \
+      die "fstab의 $target 대상이 다른 장치에 연결되어 있습니다: $existing"
+    echo "fstab 유지: $target"
+    return
+  fi
+  printf 'UUID=%s %s ntfs-3g %s 0 0\n' "$uuid" "$target" "$options" >>/etc/fstab
+  echo "fstab 추가: UUID=$uuid -> $target"
+}
+
+apply_packages() {
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update
+  apt-get install -y \
+    python3-venv python3-dev ffmpeg cifs-utils smbclient ntfs-3g \
+    build-essential cmake ninja-build libcurl4-openssl-dev openssh-server
+}
+
+apply_cli_boot() {
+  systemctl set-default multi-user.target
+  systemctl enable getty@tty1.service
+  echo "기본 부팅 대상: multi-user.target"
+}
+
+apply_console_blank() {
+  local config=/etc/default/grub.d/99-main-server-consoleblank.cfg
+  local desired='GRUB_CMDLINE_LINUX_DEFAULT="${GRUB_CMDLINE_LINUX_DEFAULT} consoleblank=300"'
+  install -d -o root -g root -m 0755 /etc/default/grub.d
+  if [[ ! -r "$config" || $(<"$config") != "$desired" ]]; then
+    printf '%s\n' "$desired" >"$config"
+    chmod 0644 "$config"
+    update-grub
+  fi
+  if [[ -w /sys/module/kernel/parameters/consoleblank ]]; then
+    (printf '%s' "$CONSOLE_BLANK_SECONDS" >/sys/module/kernel/parameters/consoleblank) 2>/dev/null || true
+  fi
+  setterm --blank 5 --powersave powerdown --powerdown 5 </dev/tty1 >/dev/tty1 2>/dev/null || \
+    setterm --blank 5 </dev/tty1 >/dev/tty1 2>/dev/null || true
+  echo "CLI 화면 절전: 5분"
+}
+
+apply_ssh() {
+  if ! dpkg-query -W -f='${Status}' openssh-server 2>/dev/null | grep -q 'ok installed'; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y openssh-server
+  fi
+  systemctl enable --now ssh.service
+  echo "SSH 서비스 활성화"
+}
+
+apply_linger() {
+  loginctl enable-linger "$TARGET_USER"
+  echo "systemd linger 활성화: $TARGET_USER"
+}
+
+apply_model_mounts() {
+  # A mounted NTFS volume can be read-only. Never chmod/chown the mounted root;
+  # only prepare the empty mount directory when it is not mounted yet.
+  mountpoint -q "$MODEL_MOUNT" || install -d -o root -g root -m 0755 "$MODEL_MOUNT"
+  mountpoint -q "$COMFY_MODEL_MOUNT" || install -d -o root -g root -m 0755 "$COMFY_MODEL_MOUNT"
+  ensure_fstab_entry "$MODEL_VOLUME_UUID" "$MODEL_MOUNT" \
+    "uid=$TARGET_UID,gid=$TARGET_GID,umask=0022,windows_names,nofail,x-systemd.device-timeout=10s"
+  ensure_fstab_entry "$COMFY_MODEL_VOLUME_UUID" "$COMFY_MODEL_MOUNT" \
+    "ro,uid=$TARGET_UID,gid=$TARGET_GID,umask=0022,nofail,x-systemd.device-timeout=10s"
+  systemctl daemon-reload
+  mountpoint -q "$MODEL_MOUNT" || mount "$MODEL_MOUNT"
+  mountpoint -q "$COMFY_MODEL_MOUNT" || mount "$COMFY_MODEL_MOUNT"
+  echo "모델 볼륨 고정 마운트 완료"
+}
+
+apply_nas() {
+  if ! command -v mount.cifs >/dev/null 2>&1 || ! command -v smbclient >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y cifs-utils smbclient
+  fi
+  mountpoint -q /mnt/nas || install -d -o "$TARGET_USER" -g "$TARGET_GID" -m 0775 /mnt/nas
+  mountpoint -q /opt/ComfyUI/output || install -d -o "$TARGET_USER" -g "$TARGET_GID" -m 0775 /opt/ComfyUI/output
+  echo "NAS 도구와 마운트 지점 준비 완료"
+}
+
+apply_gpu_services() {
+  printf 'nct6775\n' >/etc/modules-load.d/main-server-fan.conf
+  modprobe nct6775 || true
+  systemctl daemon-reload
+  if [[ -f /etc/systemd/system/gpu-tune.service ]]; then
+    systemctl enable gpu-tune.service
+  fi
+  echo "GPU/메인보드 팬 부팅 설정 활성화"
+}
+
+[[ "${1:-}" == apply ]] || die "usage: $0 apply <action>..."
+shift
+(($# > 0)) || die "적용할 Linux 설정 항목이 없습니다"
+for action in "$@"; do
+  case "$action" in
+    packages) apply_packages ;;
+    cli_boot) apply_cli_boot ;;
+    console_blank) apply_console_blank ;;
+    ssh) apply_ssh ;;
+    linger) apply_linger ;;
+    model_mounts) apply_model_mounts ;;
+    nas) apply_nas ;;
+    gpu_services) apply_gpu_services ;;
+    *) die "허용되지 않은 Linux 설정 항목: $action" ;;
+  esac
+done

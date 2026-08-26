@@ -12,6 +12,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from pathlib import Path
@@ -22,7 +23,9 @@ import psutil
 from fastapi import APIRouter, HTTPException
 
 from config import BASE_DIR, DEFAULTS, settings
+from comfy_model_paths import ModelPathError, default_model_root, ensure_model_config, resolve_model_root
 import nas_mount
+import linux_setup
 from process_mgr import Service, tail
 
 
@@ -46,7 +49,12 @@ MODEL_REVISION = "a0b936f0bbcb362c38d39840602c8d7b2476a9fc"
 VLLM_COMPAT_VERSION = "0.22.0"
 DFLASH_VLLM_SPEC = "vllm @ git+https://github.com/vllm-project/vllm.git@refs/pull/52816/head"
 COMFYUI_REPO = "https://github.com/comfyanonymous/ComfyUI.git"
+COMFYUI_MANAGER_REPO = "https://github.com/Comfy-Org/ComfyUI-Manager.git"
+COMFYUI_JH_NODES_REPO = "https://github.com/Flun/ComfyUI_JH_Nodes.git"
 SAGEATTENTION_VERSION = "2.2.0"
+# post6 is the known-good Windows baseline, while this pinned follow-up commit
+# carries its compatibility work forward and fixes Linux builds with new Torch.
+SAGEATTENTION_LINUX_SPEC = "git+https://github.com/woct0rdho/SageAttention.git@890b4ccacb39cf1693e6d96336db61d6c511a2dd"
 SAGEATTENTION_WINDOWS_REPO = "woct0rdho/SageAttention"
 CMPUNLOCKER_REPO = "https://github.com/lesj0610/cmpunlocker.git"
 
@@ -119,6 +127,7 @@ def defaults() -> dict[str, Any]:
         "server_root": str(settings.get("server_root") or DEFAULTS["server_root"]),
         "model_root": model_root,
         "comfyui_dir": str(settings.get("comfyui_dir")),
+        "comfyui_model_root": str(settings.get("comfyui_model_root") or default_model_root()),
         "llama_install_root": str(settings.get("llama_install_root")),
         "cmpunlocker_profile": "auto",
         "cmpunlocker_profile_mode_version": 2,
@@ -175,7 +184,7 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
     merged = load_settings()
     merged.update({key: value for key, value in values.items() if key in merged})
     for field in (
-        "server_root", "model_root", "comfyui_dir", "llama_install_root",
+        "server_root", "model_root", "comfyui_dir", "comfyui_model_root", "llama_install_root",
         "vllm_env", "vllm_dflash_env",
     ):
         merged[field] = _absolute_directory(merged[field], field)
@@ -206,11 +215,20 @@ def save_settings(values: dict[str, Any]) -> dict[str, Any]:
     comfy_dir = Path(merged["comfyui_dir"])
     portable_python = comfy_dir.parent / "python_embeded" / "python.exe"
     comfy_python = portable_python if os.name == "nt" and portable_python.is_file() else _venv_python(comfy_dir / "venv")
+    resolved_comfy_models = resolve_model_root(merged["comfyui_model_root"])
+    if (comfy_dir / "main.py").is_file():
+        try:
+            _, resolved_comfy_models = ensure_model_config(
+                str(comfy_dir), merged["comfyui_model_root"], try_mount=True,
+            )
+        except ModelPathError as error:
+            raise HTTPException(400, str(error)) from error
     settings.save({
         "server_root": merged["server_root"],
         "model_root": merged["model_root"],
         "comfyui_dir": merged["comfyui_dir"],
         "comfyui_python": str(comfy_python),
+        "comfyui_model_root": str(resolved_comfy_models),
         "llama_install_root": merged["llama_install_root"],
         "llama_version_glob": str(Path(merged["llama_install_root"]) / ("llama-*" if os.name != "nt" else "llama*")),
         "vllm_env": merged["vllm_env"],
@@ -305,7 +323,18 @@ def _cmpunlocker_state(configured: dict[str, Any]) -> dict[str, Any]:
     kernel = os.uname().release
     module_dir = Path("/lib/modules") / kernel / "updates" / "cmpunlocker"
     gpus = _gpu_snapshot()
-    driver_ok = any(str(gpu.get("driver", "")).startswith(("610.43.02", "610.43.03")) for gpu in gpus)
+    supported_versions = {"610.57.04", "610.43.03", "610.43.02"}
+    version_file = directory / "driver" / "VERSION"
+    try:
+        listed_versions = {
+            line.strip() for line in version_file.read_text(encoding="utf-8").splitlines()
+            if re.fullmatch(r"\d+\.\d+\.\d+", line.strip())
+        }
+        if listed_versions:
+            supported_versions = listed_versions
+    except OSError:
+        pass
+    driver_ok = any(str(gpu.get("driver", "")) in supported_versions for gpu in gpus)
     return {
         "available": True,
         "installed": module_dir.is_dir(),
@@ -346,6 +375,9 @@ def runtime_status() -> dict[str, Any]:
         warnings.append("선택 GPU가 native NVFP4 GPU 또는 CMP 170HX로 확인되지 않았습니다.")
     if not model_ok:
         warnings.append(f"로컬 모델 폴더가 없습니다: {model}")
+    resolved_comfy_models = resolve_model_root(configured["comfyui_model_root"])
+    if not _safe_exists(resolved_comfy_models):
+        warnings.append(f"ComfyUI 모델 폴더가 없습니다: {resolved_comfy_models}")
     if configured["profile"] == "dflash" and not dflash_version:
         warnings.append("DFlash2 실험 환경이 아직 설치되지 않았습니다.")
     if configured["profile"] == "mtp" and not stable_version:
@@ -353,11 +385,13 @@ def runtime_status() -> dict[str, Any]:
     return {
         "settings": configured,
         "nas": nas_mount.status(),
+        "linux_setup": linux_setup.status(),
         "service": vllm_service.info(),
         "stable": {"installed": bool(stable_version), "version": stable_version, "compatible": stable_version == VLLM_COMPAT_VERSION},
         "dflash": {"installed": bool(dflash_version), "version": dflash_version, "experimental": True},
         "comfyui": {
             "python": str(comfy_python), "installed": Path(configured["comfyui_dir"], "main.py").is_file(),
+            "model_root": str(resolved_comfy_models),
             "sageattention_version": sage_version,
             "sageattention_ready": bool(sage_version and sage_version.startswith(SAGEATTENTION_VERSION)),
         },
@@ -371,7 +405,7 @@ def runtime_status() -> dict[str, Any]:
         "warnings": warnings,
         "paths": {
             key: _path_state(configured[key]) for key in (
-                "server_root", "model_root", "comfyui_dir", "llama_install_root",
+                "server_root", "model_root", "comfyui_dir", "comfyui_model_root", "llama_install_root",
                 "vllm_env", "vllm_dflash_env",
             )
         },
@@ -403,10 +437,55 @@ def _run_logged(command: list[str], *, cwd: str | None = None, env: dict[str, st
 def _ensure_venv(path: str) -> Path:
     env_path = Path(path)
     python = _venv_python(env_path)
-    if not python.is_file():
+    base_python = sys.executable or (shutil.which("python") or shutil.which("python3") or "python3")
+
+    def pip_ready(executable: Path) -> bool:
+        if not executable.is_file():
+            return False
+        result = subprocess.run(
+            [str(executable), "-m", "pip", "--version"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=15, creationflags=NO_WINDOW,
+        )
+        return result.returncode == 0
+
+    if not pip_ready(python):
         env_path.parent.mkdir(parents=True, exist_ok=True)
-        base_python = sys.executable or (shutil.which("python") or shutil.which("python3") or "python3")
-        _run_logged([base_python, "-m", "venv", str(env_path)])
+        if os.name != "nt":
+            version_result = subprocess.run(
+                [base_python, "-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"],
+                capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW,
+            )
+            if version_result.returncode:
+                raise RuntimeError("venv용 Python 버전을 확인하지 못했습니다")
+            package = f"python{version_result.stdout.strip()}-venv"
+            ensurepip = subprocess.run(
+                [base_python, "-m", "ensurepip", "--version"],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=15, creationflags=NO_WINDOW,
+            )
+            if ensurepip.returncode:
+                prefix: list[str] = []
+                if os.geteuid() != 0:
+                    sudo_check = subprocess.run(
+                        ["sudo", "-n", "true"], capture_output=True, text=True,
+                        timeout=10, creationflags=NO_WINDOW,
+                    )
+                    if sudo_check.returncode:
+                        raise RuntimeError(
+                            f"{package} 설치가 필요하지만 비대화형 sudo를 사용할 수 없습니다"
+                        )
+                    prefix = ["sudo", "-n"]
+                _run_logged([*prefix, "apt-get", "install", "-y", package])
+        # A failed `python -m venv` leaves Python symlinks behind without pip.
+        # --upgrade repairs that directory in place after ensurepip is installed.
+        command = [base_python, "-m", "venv"]
+        if python.is_file():
+            command.append("--upgrade")
+        command.append(str(env_path))
+        _run_logged(command)
+        if not pip_ready(python):
+            raise RuntimeError(f"가상환경 복구 후에도 pip를 실행할 수 없습니다: {env_path}")
     return python
 
 
@@ -421,6 +500,35 @@ def _comfy_running(directory: Path) -> bool:
         except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess, OSError):
             continue
     return False
+
+
+def _sync_git_repository(repository: str, directory: Path) -> None:
+    """Clone a managed repository or fast-forward an existing checkout."""
+    if (directory / ".git").is_dir():
+        _run_logged(["git", "pull", "--ff-only"], cwd=str(directory))
+    elif directory.exists() and any(directory.iterdir()):
+        raise RuntimeError(f"비어 있지 않은 비-git 폴더입니다: {directory}")
+    else:
+        directory.parent.mkdir(parents=True, exist_ok=True)
+        _run_logged(["git", "clone", repository, str(directory)])
+
+
+def _install_comfy_custom_nodes(directory: Path, python: Path) -> None:
+    """Install/update the custom nodes bundled with the unified environment."""
+    custom_nodes = directory / "custom_nodes"
+    custom_nodes.mkdir(parents=True, exist_ok=True)
+
+    INSTALL_STATE["message"] = "ComfyUI-Manager 설치 / 업데이트"
+    _sync_git_repository(COMFYUI_MANAGER_REPO, custom_nodes / "ComfyUI-Manager")
+
+    INSTALL_STATE["message"] = "ComfyUI JH Nodes 설치 / 업데이트"
+    jh_nodes = custom_nodes / "ComfyUI_JH_Nodes"
+    _sync_git_repository(COMFYUI_JH_NODES_REPO, jh_nodes)
+    requirements = jh_nodes / "requirements.txt"
+    if not requirements.is_file():
+        raise RuntimeError(f"ComfyUI JH Nodes 의존성 파일이 없습니다: {requirements}")
+    INSTALL_STATE["message"] = "ComfyUI JH Nodes 의존성 설치"
+    _run_logged([str(python), "-m", "pip", "install", "-r", str(requirements)])
 
 
 def _python_torch_info(python: Path) -> dict[str, Any]:
@@ -444,6 +552,129 @@ def _sage_wheel_compatible(name: str, torch_parts: tuple[int, int, int]) -> bool
         return False
     wheel_torch = (int(match.group(1)), int(match.group(2)), int(match.group(3)))
     return torch_parts == wheel_torch or (bool(match.group(4)) and torch_parts >= wheel_torch)
+
+
+def _patch_sageattention_pure_cuda(python: Path) -> None:
+    """Match the known-good Windows Sage build's pure-CUDA Q/K path.
+
+    The user's working Windows post6 wheel changes all CUDA entry points from
+    per_thread (Triton quantization) to per_warp (CUDA quantization).  The
+    unpatched Linux v2.2 source can return NaNs for Qwen/Krea workflows even
+    though a small random-tensor smoke test succeeds.
+    """
+    locate = subprocess.run(
+        [str(python), "-c", "import pathlib,sageattention; print(pathlib.Path(sageattention.__file__).with_name('core.py'))"],
+        capture_output=True, text=True, timeout=30, creationflags=NO_WINDOW,
+    )
+    if locate.returncode:
+        raise RuntimeError("SageAttention core.py 위치 확인 실패: " + (locate.stderr.strip() or locate.stdout.strip()))
+    core = Path(locate.stdout.strip())
+    try:
+        source = core.read_text(encoding="utf-8")
+    except OSError as error:
+        raise RuntimeError(f"SageAttention core.py를 읽지 못했습니다: {error}") from error
+    marker = 'qk_quant_gran: str = "per_thread"'
+    replacement = 'qk_quant_gran: str = "per_warp"'
+    count = source.count(marker)
+    if count:
+        source = source.replace(marker, replacement)
+        temporary = core.with_suffix(".py.tmp")
+        temporary.write_text(source, encoding="utf-8")
+        os.replace(temporary, core)
+        _run_logged([str(python), "-m", "compileall", "-q", "-f", str(core)])
+    elif source.count('qk_quant_gran: str = "per_warp"') < 3:
+        raise RuntimeError("SageAttention pure-CUDA 호환 패치를 적용할 위치를 찾지 못했습니다")
+    _run_logged([
+        str(python), "-c",
+        "import inspect,sageattention.core as c; "
+        "names=('sageattn_qk_int8_pv_fp16_cuda','sageattn_qk_int8_pv_fp8_cuda','sageattn_qk_int8_pv_fp8_cuda_sm90'); "
+        "values=[inspect.signature(getattr(c,n)).parameters['qk_quant_gran'].default for n in names]; "
+        "assert values==['per_warp']*3, values; print('SageAttention pure-CUDA per_warp patch OK')",
+    ])
+
+
+def _ensure_linux_nvcc(cuda_version: str) -> str:
+    """Install the matching NVIDIA compiler package on supported Ubuntu hosts."""
+    match = re.fullmatch(r"(\d+)\.(\d+)", cuda_version)
+    if not match:
+        raise RuntimeError(f"PyTorch CUDA 버전을 해석할 수 없습니다: {cuda_version}")
+    major, minor = match.groups()
+    candidates = [
+        shutil.which("nvcc"),
+        f"/usr/local/cuda-{major}.{minor}/bin/nvcc",
+        "/usr/local/cuda/bin/nvcc",
+    ]
+    found = next((value for value in candidates if value and Path(value).is_file()), None)
+    headers_ready = any(Path(path).is_file() for path in (
+        f"/usr/local/cuda-{major}.{minor}/include/cusparse.h",
+        "/usr/local/cuda/include/cusparse.h",
+    )) and all(Path(f"/usr/local/cuda-{major}.{minor}/include/{name}").is_file() for name in (
+        "cublas_v2.h", "cublasLt.h", "cusolverDn.h",
+    )) and Path(
+        f"/usr/include/python{sys.version_info.major}.{sys.version_info.minor}/Python.h"
+    ).is_file()
+    if found and headers_ready:
+        return found
+
+    os_release: dict[str, str] = {}
+    try:
+        for line in Path("/etc/os-release").read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                os_release[key] = value.strip().strip('"')
+    except OSError as error:
+        raise RuntimeError(f"CUDA Toolkit 설치용 운영체제 정보를 읽지 못했습니다: {error}") from error
+    version_id = os_release.get("VERSION_ID", "")
+    if os_release.get("ID") != "ubuntu" or not re.fullmatch(r"\d{2}\.\d{2}", version_id):
+        raise RuntimeError("nvcc 자동 설치는 Ubuntu에서만 지원합니다")
+    if os.uname().machine != "x86_64":
+        raise RuntimeError("nvcc 자동 설치는 Ubuntu x86-64에서만 지원합니다")
+
+    prefix: list[str] = []
+    if os.geteuid() != 0:
+        sudo_check = subprocess.run(
+            ["sudo", "-n", "true"], capture_output=True, text=True,
+            timeout=10, creationflags=NO_WINDOW,
+        )
+        if sudo_check.returncode:
+            raise RuntimeError("CUDA Toolkit 설치가 필요하지만 비대화형 sudo를 사용할 수 없습니다")
+        prefix = ["sudo", "-n"]
+
+    keyring_check = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Status}", "cuda-keyring"],
+        capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW,
+    )
+    if "ok installed" not in keyring_check.stdout:
+        distro = "ubuntu" + version_id.replace(".", "")
+        url = f"https://developer.download.nvidia.com/compute/cuda/repos/{distro}/x86_64/cuda-keyring_1.1-1_all.deb"
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        temporary = tempfile.NamedTemporaryFile(prefix="cuda-keyring-", suffix=".deb", delete=False)
+        try:
+            temporary.write(response.content)
+            temporary.close()
+            _run_logged([*prefix, "dpkg", "-i", temporary.name])
+        finally:
+            try:
+                Path(temporary.name).unlink()
+            except OSError:
+                pass
+        _run_logged([*prefix, "apt-get", "update"])
+
+    packages = [
+        f"python{sys.version_info.major}.{sys.version_info.minor}-dev",
+        f"cuda-nvcc-{major}-{minor}",
+        f"libcusparse-dev-{major}-{minor}",
+        f"libcublas-dev-{major}-{minor}",
+        f"libcusolver-dev-{major}-{minor}",
+    ]
+    apt_env = dict(os.environ)
+    apt_env["DEBIAN_FRONTEND"] = "noninteractive"
+    _run_logged([*prefix, "apt-get", "install", "-y", *packages], env=apt_env)
+    expected = Path(f"/usr/local/cuda-{major}.{minor}/bin/nvcc")
+    if not expected.is_file():
+        raise RuntimeError(f"{packages[0]} 설치 후 nvcc를 찾지 못했습니다")
+    return str(expected)
 
 
 def _install_sageattention(python: Path) -> None:
@@ -477,9 +708,8 @@ def _install_sageattention(python: Path) -> None:
             raise RuntimeError(f"torch {info.get('torch')} / CUDA {cuda}용 SageAttention 2.2.0 Windows wheel이 없습니다")
         _run_logged([str(python), "-m", "pip", "install", "--upgrade", asset["browser_download_url"]])
     else:
-        nvcc = shutil.which("nvcc")
-        if not nvcc:
-            raise RuntimeError("SageAttention 2.2.0 빌드에 필요한 CUDA Toolkit(nvcc)이 없습니다")
+        cuda = str(info.get("cuda") or "")
+        nvcc = _ensure_linux_nvcc(cuda)
         build_env = dict(os.environ)
         build_env.setdefault("CUDA_HOME", str(Path(nvcc).resolve().parent.parent))
         build_env.setdefault("EXT_PARALLEL", "4")
@@ -492,10 +722,11 @@ def _install_sageattention(python: Path) -> None:
         if arches:
             build_env["TORCH_CUDA_ARCH_LIST"] = ";".join(arches)
         _run_logged([str(python), "-m", "pip", "install", "--upgrade", "ninja", "packaging", "wheel", "setuptools"])
-        _run_logged(
-            [str(python), "-m", "pip", "install", "--upgrade", f"sageattention=={SAGEATTENTION_VERSION}", "--no-build-isolation"],
-            env=build_env,
-        )
+        _run_logged([
+            str(python), "-m", "pip", "install", "--force-reinstall", "--no-deps",
+            SAGEATTENTION_LINUX_SPEC, "--no-build-isolation",
+        ], env=build_env)
+    _patch_sageattention_pure_cuda(python)
     _run_logged([
         str(python), "-c",
         "from importlib.metadata import version; from sageattention import sageattn; "
@@ -518,17 +749,13 @@ def _install_worker(target: str) -> None:
             _run_logged([str(python), "-m", "pip", "install", "--upgrade", DFLASH_VLLM_SPEC])
         elif target == "comfyui":
             directory = Path(configured["comfyui_dir"])
-            if (directory / ".git").is_dir():
-                _run_logged(["git", "pull", "--ff-only"], cwd=str(directory))
-            elif directory.exists() and any(directory.iterdir()):
-                raise RuntimeError(f"비어 있지 않은 비-git 폴더입니다: {directory}")
-            else:
-                directory.parent.mkdir(parents=True, exist_ok=True)
-                _run_logged(["git", "clone", COMFYUI_REPO, str(directory)])
+            _sync_git_repository(COMFYUI_REPO, directory)
             portable_python = directory.parent / "python_embeded" / "python.exe"
             python = portable_python if os.name == "nt" and portable_python.is_file() else _ensure_venv(str(directory / "venv"))
             _run_logged([str(python), "-m", "pip", "install", "--upgrade", "pip"])
             _run_logged([str(python), "-m", "pip", "install", "-r", str(directory / "requirements.txt")])
+            _install_comfy_custom_nodes(directory, python)
+            ensure_model_config(str(directory), configured["comfyui_model_root"], try_mount=True)
             _install_sageattention(python)
         elif target.startswith("cmpunlocker-"):
             if os.name == "nt":
@@ -538,10 +765,14 @@ def _install_worker(target: str) -> None:
                 raise RuntimeError("CMP unlock profile은 auto, 8gb 또는 10gb여야 합니다")
             unlock_state = _cmpunlocker_state(configured)
             missing = []
-            if not unlock_state.get("cmp_gpu_found"):
-                missing.append("CMP 170HX")
-            if not unlock_state.get("driver_supported"):
-                missing.append("nvidia-open 610.43.02/03")
+            # nvidia-smi and its driver version are unavailable before the
+            # NVIDIA driver is active. An explicit profile is the operator's
+            # override, so hardware/driver detection gates only auto mode.
+            if profile == "auto":
+                if not unlock_state.get("cmp_gpu_found"):
+                    missing.append("CMP 170HX")
+                if not unlock_state.get("driver_supported"):
+                    missing.append("nvidia-open 610.43.02/03")
             if not unlock_state.get("kernel_headers"):
                 missing.append("현재 커널 headers")
             if missing:
@@ -720,6 +951,20 @@ def infrastructure_nas_open(target: str):
     except OSError as error:
         raise HTTPException(500, f"파일 탐색기를 열지 못했습니다: {error}") from error
     return {"ok": True, "path": path}
+
+
+@router.get("/linux-setup")
+def infrastructure_linux_setup_get():
+    return linux_setup.status()
+
+
+@router.post("/linux-setup")
+def infrastructure_linux_setup_apply(values: dict[str, Any]):
+    try:
+        state = linux_setup.start(values)
+        return {"ok": True, "state": state}
+    except RuntimeError as error:
+        raise HTTPException(400, str(error)) from error
 
 
 @router.post("/install/{target}")

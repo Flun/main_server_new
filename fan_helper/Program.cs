@@ -187,6 +187,78 @@ internal sealed class FanBackend : IDisposable
         return stdout.Trim();
     }
 
+    private static string RunBcdEdit(params string[] arguments)
+    {
+        var start = new ProcessStartInfo
+        {
+            FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "bcdedit.exe"),
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        foreach (string argument in arguments)
+            start.ArgumentList.Add(argument);
+        using Process process = Process.Start(start) ?? throw new InvalidOperationException("bcdedit를 시작하지 못했습니다.");
+        string stdout = process.StandardOutput.ReadToEnd();
+        string stderr = process.StandardError.ReadToEnd();
+        if (!process.WaitForExit(15000))
+        {
+            try { process.Kill(true); } catch { }
+            throw new TimeoutException("Windows UEFI 항목 조회 시간이 초과되었습니다.");
+        }
+        if (process.ExitCode != 0)
+            throw new InvalidOperationException((stderr + Environment.NewLine + stdout).Trim());
+        return stdout;
+    }
+
+    private static Dictionary<string, Dictionary<string, string>?> FirmwareTargets()
+    {
+        string output = RunBcdEdit("/enum", "firmware", "/v");
+        var targets = new Dictionary<string, Dictionary<string, string>?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["windows"] = null,
+            ["linux"] = null,
+        };
+        string? identifier = null;
+        foreach (string raw in output.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries))
+        {
+            Match id = Regex.Match(raw, @"\{(?:[0-9a-fA-F-]{36}|bootmgr|fwbootmgr)\}");
+            if (id.Success)
+                identifier = id.Value;
+            if (identifier is null)
+                continue;
+            if (raw.Contains("Windows Boot Manager", StringComparison.OrdinalIgnoreCase))
+                targets["windows"] = new Dictionary<string, string> { ["id"] = identifier, ["description"] = "Windows Boot Manager" };
+            else if (raw.Contains("Ubuntu", StringComparison.OrdinalIgnoreCase))
+                targets["linux"] = new Dictionary<string, string> { ["id"] = identifier, ["description"] = "Ubuntu" };
+        }
+        return targets;
+    }
+
+    public object OsBootStatus()
+    {
+        var targets = FirmwareTargets();
+        bool available = targets["windows"] is not null && targets["linux"] is not null;
+        return new
+        {
+            ok = true, available, platform = "windows", current = "windows", targets,
+            error = available ? null : "Windows Boot Manager 또는 Ubuntu UEFI 항목을 찾지 못했습니다",
+        };
+    }
+
+    public object OsBootSet(string target)
+    {
+        if (target is not ("windows" or "linux"))
+            throw new ArgumentException("지원하지 않는 부팅 대상입니다.");
+        var targets = FirmwareTargets();
+        Dictionary<string, string>? entry = targets[target];
+        if (entry is null)
+            throw new InvalidOperationException($"{target} UEFI 부팅 항목을 찾지 못했습니다.");
+        RunBcdEdit("/set", "{fwbootmgr}", "bootsequence", entry["id"]);
+        return new { ok = true, target, entry };
+    }
+
     public object GpuTune(string uuid, int power, int clock, int fan)
     {
         if (!Regex.IsMatch(uuid, @"^GPU-[A-Za-z0-9-]+$"))
@@ -291,6 +363,8 @@ internal static class Program
                         root.GetProperty("power").GetInt32(),
                         root.GetProperty("clock").GetInt32(),
                         root.GetProperty("fan").GetInt32()),
+                    "os_boot_status" => backend.OsBootStatus(),
+                    "os_boot_set" => backend.OsBootSet(root.GetProperty("target").GetString() ?? ""),
                     "ping" => new { ok = true, protocol = 1 },
                     _ => throw new ArgumentException($"지원하지 않는 명령입니다: {command}")
                 };

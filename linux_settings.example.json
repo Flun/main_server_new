@@ -1,11 +1,12 @@
 {
   "comfyui_dir": "/opt/ComfyUI",
   "comfyui_python": "/opt/ComfyUI/venv/bin/python",
+  "comfyui_model_root": "/mnt/main-server-comfy/ComfyUI_windows_portable/ComfyUI/models",
   "comfyui_port": "8188",
   "llama_install_root": "/opt",
   "llama_version_glob": "/opt/llama-*",
   "llama_port": "8080",
-  "model_root": "/mnt/model",
+  "model_root": "/mnt/main-server-models/model",
   "bot_dir": "/opt/comfy_bridge",
   "watcher_dir": "/home/flux/Documents/New project",
   "autostart": false

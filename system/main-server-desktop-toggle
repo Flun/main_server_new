@@ -9,13 +9,23 @@ TARGET_USER=flux
 TARGET_UID=1000
 USER_RUNTIME=/run/user/$TARGET_UID
 die() { echo "$*" >&2; exit 2; }
-get_mode() { if systemctl is-active --quiet "$DISPLAY_MANAGER"; then echo gui; else echo cli; fi; }
 
 userctl() {
   runuser -u "$TARGET_USER" -- env \
     XDG_RUNTIME_DIR="$USER_RUNTIME" \
     DBUS_SESSION_BUS_ADDRESS="unix:path=$USER_RUNTIME/bus" \
     systemctl --user "$@"
+}
+
+restart_optional_user_service() {
+  local service=$1
+  if ! userctl cat "$service" >/dev/null 2>&1; then
+    echo "선택 서비스 없음, 건너뜀: $service" >&2
+    return 0
+  fi
+  if ! userctl restart "$service"; then
+    echo "선택 서비스 재시작 실패, GUI 전환은 유지: $service" >&2
+  fi
 }
 
 find_active_desktop_session() {
@@ -78,24 +88,19 @@ activate_gui_vt() {
 }
 
 case "${1:-}" in
-  get) get_mode ;;
   set)
     case "${2:-}" in
       gui)
-        # A GUI transition is also the final recovery path after a failed
-        # text-console wake. Try DDC/fbcon first; Xorg will provide a second
-        # signal once GDM starts.
-        /usr/local/sbin/main-server-monitor-power on >/dev/null 2>&1 || true
         systemctl stop "$CONSOLE_GETTY" 2>/dev/null || true
         systemctl start "$DISPLAY_MANAGER"
         wait_for_desktop_session >/dev/null || die "GDM은 시작됐지만 flux 자동 로그인 세션이 30초 안에 생성되지 않았습니다"
         wait_for_gnome_ready || die "flux 로그인은 됐지만 GNOME Shell이 60초 안에 준비되지 않았습니다"
         activate_gui_vt || true
         # GDM greeter가 아니라 새 flux 세션의 DISPLAY/PipeWire에 다시 붙인다.
-        userctl restart gnome-remote-desktop.service
-        userctl restart sunshine.service
-        userctl is-active --quiet gnome-remote-desktop.service || die "3390 원격 데스크톱 재시작 실패"
-        userctl is-active --quiet sunshine.service || die "Sunshine 재시작 실패"
+        # 원격 데스크톱 서비스는 GUI 전환의 부가 기능이다. 설치되지 않았거나
+        # 재시작에 실패해도 이미 성공한 GDM/GNOME 전환을 실패로 되돌리지 않는다.
+        restart_optional_user_service gnome-remote-desktop.service
+        restart_optional_user_service sunshine.service
         echo gui
         ;;
       cli)
@@ -110,6 +115,5 @@ case "${1:-}" in
         ;;
       *) die "usage: $0 set gui|cli" ;;
     esac ;;
-  toggle) if [[ $(get_mode) == gui ]]; then exec "$0" set cli; else exec "$0" set gui; fi ;;
-  *) die "usage: $0 get|set gui|cli|toggle" ;;
+  *) die "usage: $0 set gui|cli" ;;
 esac

@@ -15,4 +15,6 @@ KillMode=process
 Environment=PYTHONUNBUFFERED=1
 
 [Install]
+# With loginctl linger enabled, this user target starts at boot without a tty
+# or graphical login. ComfyUI/llama therefore remain fully headless.
 WantedBy=default.target

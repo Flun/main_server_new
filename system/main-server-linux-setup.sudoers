@@ -1,0 +1,2 @@
+# main_server may only invoke the root-owned allowlisted Linux setup helper.
+flux ALL=(root) NOPASSWD: /usr/local/sbin/main-server-linux-setup apply *

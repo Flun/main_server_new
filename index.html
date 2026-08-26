@@ -50,6 +50,13 @@
             color: #f4f4f5; padding: 0.5rem 0.75rem; font-size: 0.875rem; outline: none;
         }
         .input-base:focus { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f1; }
+        .power-menu-item {
+            display: flex; width: 100%; align-items: center; justify-content: space-between;
+            gap: 0.75rem; border-radius: 0.5rem; padding: 0.625rem 0.75rem;
+            text-align: left; font-size: 0.8125rem;
+        }
+        .power-menu-item:hover { background: rgba(63, 63, 70, 0.65); }
+        .power-menu-item:disabled { cursor: not-allowed; opacity: 0.35; }
         
         .log-container { font-family: 'JetBrains Mono', monospace; white-space: pre-wrap; word-wrap: break-word; font-size: 0.8rem; line-height: 1.5; }
         .modal-scroll-lock { overscroll-behavior: contain; touch-action: pan-y; }
@@ -73,10 +80,6 @@
                     <span>System Online</span>
                     <span v-if="status.initialization && !status.initialization.ready" class="ml-2 pl-2 border-l border-zinc-700 text-amber-400">{{ status.initialization.message }}</span>
                     <span v-if="hw.lhm_available" class="ml-2 pl-2 border-l border-zinc-700 text-indigo-400">LHM Synced</span>
-                    <span v-if="!isWindows" class="ml-2 pl-2 border-l border-zinc-700 inline-flex items-center gap-1.5" :class="monitorPower.state === 'on' ? 'text-emerald-400' : monitorPower.state === 'off' ? 'text-zinc-400' : 'text-amber-400'">
-                        <span class="w-2 h-2 rounded-full" :class="monitorPower.state === 'on' ? 'bg-emerald-400' : monitorPower.state === 'off' ? 'bg-zinc-600' : 'bg-amber-400'"></span>
-                        물리 모니터: {{ !monitorPower.available ? '지원 안 함' : monitorPower.state === 'on' ? '켜짐' : monitorPower.state === 'off' ? '꺼짐' : '확인 중' }}<span v-if="monitorPower.count"> ({{ monitorPower.count }}대)</span>
-                    </span>
                 </div>
             </div>
             <div class="flex flex-wrap gap-3 w-full sm:w-auto">
@@ -85,33 +88,27 @@
                 <a href="/dataset" class="px-3 py-2 text-sm font-medium border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-300 rounded-lg transition shadow-sm">Dataset</a>
                 <a href="/vast" class="px-3 py-2 text-sm font-medium border border-sky-500/30 bg-sky-500/10 hover:bg-sky-500/20 text-sky-300 rounded-lg transition shadow-sm">Vast Remote</a>
                 <a href="/infrastructure" class="px-3 py-2 text-sm font-medium border border-rose-500/30 bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 rounded-lg transition shadow-sm">통합 환경</a>
-                <button v-if="!isWindows" @click="toggleDesktopMode" :disabled="!desktop.available || desktop.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm flex items-center justify-center gap-2 transition disabled:opacity-40" :class="desktop.mode === 'gui' ? 'bg-amber-500/10 border border-amber-500/25 text-amber-300 hover:bg-amber-500/20' : 'bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20'" :title="desktop.switching ? '전환 중...' : 'GUI/CLI 전환 (원격에서도 가능)'">
-                    <svg v-if="!desktop.switching" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 18h.01M8 21h8a2 2 0 002-2V5a2 2 0 00-2-2H8a2 2 0 00-2 2v14a2 2 0 002 2z"></path></svg>
-                    <svg v-else class="w-4 h-4 animate-spin" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-                    <span v-if="desktop.switching">전환 중...</span>
-                    <span v-else-if="desktop.mode === 'gui'">컴퓨트 모드 전환</span>
-                    <span v-else-if="desktop.mode === 'cli'">GUI 모드 전환</span>
-                    <span v-else>데스크톱 모드</span>
-                </button>
-                <button v-if="!isWindows" @click="setMonitorPower('off')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-sky-500/10 border border-sky-500/25 text-sky-300 hover:bg-sky-500/20" title="현재 상태와 관계없이 DDC/CI 끄기 명령을 강제로 전송">
-                    <span v-if="monitorPower.switching === 'off'">끄는 중...</span>
-                    <span v-else>물리 모니터 강제 끄기</span>
-                </button>
-                <button v-if="!isWindows" @click="setMonitorPower('on')" :disabled="!monitorPower.available || monitorPower.switching" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40 bg-emerald-500/10 border border-emerald-500/25 text-emerald-300 hover:bg-emerald-500/20" title="GUI/CLI 상태와 관계없이 DDC/CI 켜기 명령을 강제로 전송">
-                    <span v-if="monitorPower.switching === 'on'">켜는 중...</span>
-                    <span v-else>물리 모니터 강제 켜기</span>
-                </button>
-                <button v-if="!isWindows" @click="toggleSunshineMonitorOff" :disabled="sunshineMonitorOff.saving" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium rounded-lg shadow-sm transition disabled:opacity-40" :class="sunshineMonitorOff.enabled ? 'bg-violet-500/15 border border-violet-500/30 text-violet-300 hover:bg-violet-500/25' : 'bg-zinc-800 border border-zinc-700 text-zinc-400 hover:bg-zinc-700'" title="Moonlight Desktop 스트림이 시작되면 물리 모니터를 자동으로 끔">
-                    <span v-if="sunshineMonitorOff.saving">저장 중...</span>
-                    <span v-else>Moonlight 자동 화면끄기 {{ sunshineMonitorOff.enabled ? 'ON' : 'OFF' }}</span>
-                </button>
-                <button @click="restartManager" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium bg-zinc-800 border border-zinc-700 hover:bg-zinc-700 hover:border-zinc-600 rounded-lg text-zinc-300 shadow-sm">
-                    Restart Manager
-                </button>
-                <button @click="panicKill" class="flex-1 sm:flex-none px-4 py-2 text-sm font-medium bg-rose-500/10 border border-rose-500/20 text-rose-400 hover:bg-rose-500/20 rounded-lg shadow-sm flex items-center justify-center gap-2">
-                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"></path></svg>
-                    Terminate All
-                </button>
+                <div class="relative ml-auto sm:ml-0" @click.outside="powerMenuOpen=false">
+                    <button @click.stop="powerMenuOpen=!powerMenuOpen" :disabled="powerBusy" class="flex h-10 w-10 items-center justify-center rounded-lg border border-zinc-700 bg-zinc-800/70 text-zinc-300 shadow-sm transition hover:border-zinc-600 hover:bg-zinc-700/80 hover:text-white disabled:opacity-40" title="전원 및 서버 제어" aria-label="전원 및 서버 제어" :aria-expanded="powerMenuOpen">
+                        <svg class="h-5 w-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M12 2v10m6.36-6.36a9 9 0 1 1-12.72 0"></path></svg>
+                    </button>
+                    <div v-if="powerMenuOpen" class="absolute right-0 z-50 mt-2 w-72 overflow-hidden rounded-xl border border-zinc-700 bg-zinc-900/95 p-1.5 shadow-2xl backdrop-blur-xl">
+                        <div class="px-3 pb-1.5 pt-1 text-[10px] font-semibold uppercase tracking-wider text-zinc-600">서비스 제어</div>
+                        <button @click="runPowerAction('terminate')" class="power-menu-item text-rose-300"><span>Terminate All</span><span class="text-[10px] text-zinc-600">AI 서비스 전체 종료</span></button>
+                        <template v-if="!isWindows">
+                            <button @click="runPowerAction('gui')" :disabled="!!desktop.switching" class="power-menu-item"><span>우분투 GUI 모드 전환</span></button>
+                            <button @click="runPowerAction('cli')" :disabled="!!desktop.switching" class="power-menu-item"><span>우분투 CLI 모드 전환</span></button>
+                        </template>
+                        <div class="my-1 border-t border-zinc-800"></div>
+                        <button @click="runPowerAction('update')" :disabled="managerUpdating" class="power-menu-item"><span>{{managerUpdating ? '업데이트 중...' : 'main_server 업데이트'}}</span><span class="text-[10px] text-zinc-600">Git 현재 브랜치</span></button>
+                        <button @click="runPowerAction('restart-manager')" class="power-menu-item"><span>main_server 다시 시작</span></button>
+                        <button @click="runPowerAction('stop-manager')" class="power-menu-item text-amber-300"><span>main_server 종료</span></button>
+                        <div class="my-1 border-t border-zinc-800"></div>
+                        <button @click="runPowerAction('switch-os')" :disabled="!osBoot.available || osBoot.switching" class="power-menu-item text-sky-300"><span>{{osBoot.current === 'linux' ? 'Windows 11로 재부팅' : osBoot.current === 'windows' ? 'Ubuntu로 재부팅' : 'OS 전환 사용 불가'}}</span></button>
+                        <button @click="runPowerAction('restart-system')" class="power-menu-item"><span>시스템 다시 시작</span></button>
+                        <button @click="runPowerAction('shutdown-system')" class="power-menu-item text-rose-300"><span>시스템 종료</span></button>
+                    </div>
+                </div>
             </div>
         </header>
 
@@ -218,22 +215,22 @@
             </div>
             <div v-if="gpuTuning.available" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
-                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">GPU 전력 / 코어 클럭 / 팬</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. Core max는 고정 클럭이 아니라 부스트 상한이며 idle에서는 자동으로 다운클럭됩니다.</p><p v-if="!autoStart.gpu_tuning_enabled" class="mt-1 text-[11px] text-amber-500">GPU 튜닝이 꺼져 있어 부팅 시 저장된 값이 재적용되지 않습니다 (MSI Afterburner 등 외부 도구 사용 시 권장).</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
+                    <div><h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">{{ isWindows ? 'GPU 전력 / 코어 클럭 / 팬' : 'GPU 전력 / 코어 클럭' }}</h3><p class="mt-1 text-[11px] text-zinc-600">적용한 값은 GPU UUID별로 저장되어 다음 부팅에도 유지됩니다. Core max는 고정 클럭이 아니라 부스트 상한이며 idle에서는 자동으로 다운클럭됩니다.</p><p v-if="!autoStart.gpu_tuning_enabled" class="mt-1 text-[11px] text-amber-500">GPU 튜닝이 꺼져 있어 부팅 시 저장된 값이 재적용되지 않습니다 (MSI Afterburner 등 외부 도구 사용 시 권장).</p><p class="mt-1 text-[11px] text-amber-500/80">CMP 170HX 권장 기본값: 250W / 코어 1410MHz. HBM 메모리 클럭은 지원값으로 고정되며 이 화면에서 변경하지 않습니다.</p></div>
                     <div class="flex items-center gap-3">
                         <label class="flex cursor-pointer select-none items-center gap-1.5 rounded border px-2 py-1 text-[11px] transition-colors" :class="autoStart.gpu_tuning_enabled ? 'border-indigo-500/40 bg-indigo-500/10 text-indigo-300' : 'border-zinc-700 text-zinc-500 hover:bg-zinc-800'"><input type="checkbox" v-model="autoStart.gpu_tuning_enabled" @change="saveAutoStart"> GPU 튜닝 사용</label>
                         <span class="rounded border border-emerald-500/20 bg-emerald-500/10 px-2 py-1 text-[10px] text-emerald-400">{{ gpuTuning.service === 'manager-autostart' ? '매니저 시작 시 적용' : 'systemd 적용' }}</span>
                         <span v-if="gpuTuning.persistence" class="rounded border px-2 py-1 text-[10px]" :class="gpuTuning.persistence.status === 'ready' ? 'border-emerald-500/20 text-emerald-400' : gpuTuning.persistence.status === 'retrying' ? 'border-amber-500/30 text-amber-400' : 'border-zinc-700 text-zinc-500'">{{ gpuTuning.persistence.status === 'ready' ? `부팅 재적용 완료 (${gpuTuning.persistence.applied})` : gpuTuning.persistence.status === 'retrying' ? '부팅 재적용 재시도 중' : gpuTuning.persistence.status === 'disabled' ? '재적용 꺼짐' : '재적용 대기' }}</span>
                     </div>
                 </div>
-                <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto] lg:items-end">
+                <div v-for="gpu in gpuTuning.gpus" :key="gpu.uuid" class="mt-3 grid gap-3 rounded border border-zinc-800 p-3 lg:items-end" :class="isWindows ? 'lg:grid-cols-[minmax(180px,1fr)_130px_150px_130px_auto]' : 'lg:grid-cols-[minmax(180px,1fr)_130px_150px_auto]'">
                     <div><div class="flex flex-wrap items-center gap-2"><div class="text-xs font-semibold">GPU {{ gpu.index }} · {{ gpu.profile === 'cmp_170hx' ? 'CMP 170HX' : gpu.name }}</div><span class="rounded border px-1.5 py-0.5 text-[9px]" :class="gpu.configured?.enabled === false ? 'border-zinc-700 text-zinc-500' : gpu.configured?.enabled ? 'border-indigo-500/30 text-indigo-300' : 'border-zinc-800 text-zinc-600'">{{ gpu.configured?.enabled === false ? '적용 꺼짐' : gpu.configured?.enabled ? '부팅 적용' : '미설정' }}</span></div><div class="mt-1 font-mono text-[9px] text-zinc-600">{{ gpu.uuid }}</div><div class="mt-1 text-[10px] text-zinc-500">현재 {{ gpu.power_draw ?? '--' }}W · Core {{ gpu.clock_current ?? '--' }}MHz · Memory {{ gpu.memory_clock_current ?? '--' }}MHz · Fan {{ gpu.fan_speed ?? '--' }}%</div></div>
                     <label class="text-[10px] text-zinc-500">Power ({{ gpu.power_min }}–{{ gpu.power_max }}W)<input type="number" v-model.number="gpu.edit.power_limit" :min="gpu.power_min" :max="gpu.power_max" :disabled="!autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
                     <label class="text-[10px] text-zinc-500">Core max (idle 자동)<input type="number" v-model.number="gpu.edit.clock_max" min="210" :max="gpu.clock_hardware_max" :disabled="!autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
-                    <label class="text-[10px] text-zinc-500">Fan (0=자동, 20–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported || !autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
+                    <label v-if="isWindows" class="text-[10px] text-zinc-500">Fan (0=자동, 20–100%)<input type="number" v-model.number="gpu.edit.fan_percent" min="0" max="100" :disabled="!gpu.fan_supported || !autoStart.gpu_tuning_enabled" class="input-base mt-1 w-full text-right disabled:opacity-40"></label>
                     <div class="flex flex-wrap gap-2"><button @click="applyGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled" class="rounded bg-indigo-600 px-3 py-2 text-xs font-medium text-white hover:bg-indigo-500 disabled:opacity-40">적용</button><button @click="resetGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled" class="rounded border border-zinc-700 px-3 py-2 text-xs text-zinc-400 hover:bg-zinc-800 disabled:opacity-40">권장 기본값</button><button @click="disableGpuTuning(gpu)" :disabled="gpuTuningSaving || !autoStart.gpu_tuning_enabled || gpu.configured?.enabled === false" class="rounded border border-zinc-800 px-3 py-2 text-xs text-zinc-500 hover:bg-zinc-800 disabled:opacity-40">적용 끄기</button></div>
                 </div>
             </div>
-            <div v-if="isWindows" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
+            <div v-if="motherboardFans.platform" class="mt-4 rounded-lg border border-zinc-800 bg-zinc-950/40 p-4">
                 <div class="flex flex-wrap items-start justify-between gap-3">
                     <div>
                         <h3 class="text-xs font-semibold uppercase tracking-wider text-zinc-400">메인보드 팬 / GPU HBM 연동</h3>
@@ -250,8 +247,8 @@
                     </div>
                 </div>
                 <div class="mt-3 inline-flex rounded-lg border border-zinc-700 bg-zinc-900 p-1">
-                    <button @click="setMotherboardFanMode('auto')" :disabled="motherboardFanSaving" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode !== 'manual' ? 'bg-indigo-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'">자동 운전</button>
-                    <button @click="setMotherboardFanMode('manual')" :disabled="motherboardFanSaving || motherboardFans.conflict" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode === 'manual' ? 'bg-amber-500 text-zinc-950 shadow' : 'text-zinc-400 hover:text-zinc-200'">수동 팬 찾기</button>
+                    <button @click="setMotherboardFanMode('auto')" :disabled="motherboardFanSaving || !motherboardFans.available" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode !== 'manual' ? 'bg-indigo-600 text-white shadow' : 'text-zinc-400 hover:text-zinc-200'">자동 운전</button>
+                    <button @click="setMotherboardFanMode('manual')" :disabled="motherboardFanSaving || motherboardFans.conflict || !motherboardFans.available" class="rounded-md px-4 py-2 text-xs font-medium transition disabled:opacity-40" :class="motherboardFans.runtime?.control_mode === 'manual' ? 'bg-amber-500 text-zinc-950 shadow' : 'text-zinc-400 hover:text-zinc-200'">수동 팬 찾기</button>
                 </div>
                 <div v-if="motherboardFans.runtime?.error" class="mt-3 rounded border border-rose-500/20 bg-rose-500/5 px-3 py-2 text-[11px] text-rose-300">{{ motherboardFans.runtime.error }}</div>
                 <div v-if="motherboardFans.runtime?.control_mode === 'manual'" class="mt-3 rounded-lg border border-amber-500/20 bg-amber-500/5 p-4">
@@ -1033,14 +1030,15 @@
                     comfySettings: {
                         listen: true,
                         use_sage_attention: true,
-                        disable_cuda_malloc: false,
+                        disable_cuda_malloc: true,
                         preview_method_none: false,
                         cache_none: false,
                         reserve_vram_enabled: true,
                         reserve_vram: 1,
                         disable_async_offload: false,
+                        disable_dynamic_vram: true,
                         fast_disk: false,
-                        fast_fp16_accumulation: true,
+                        fast_fp16_accumulation: false,
                         gpu_device: ''
                     },
                     comfySettingsSaving: false,
@@ -1051,6 +1049,7 @@
                         { key: 'preview_method_none', label: '--preview-method none' },
                         { key: 'cache_none', label: '--cache-none' },
                         { key: 'disable_async_offload', label: '--disable-async-offload' },
+                        { key: 'disable_dynamic_vram', label: '--disable-dynamic-vram' },
                         { key: 'fast_disk', label: '--fast-disk' },
                         { key: 'fast_fp16_accumulation', label: '--fast fp16_accumulation' }
                     ],
@@ -1074,9 +1073,9 @@
                     },
                     hwHistoryModal: { show: false, history: [] },
                     hwHistoryTimer: null,
-                    desktop: { available: false, mode: 'unknown', switching: false },
-                    monitorPower: { available: false, state: 'unknown', count: 0, switching: '' },
-                    sunshineMonitorOff: { enabled: true, saving: false }
+                    desktop: { switching: '' },
+                    osBoot: { available: false, platform: '', current: '', targets: {}, error: '', switching: false },
+                    powerMenuOpen: false, powerBusy: false, managerUpdating: false
                 };
             },
             computed: {
@@ -1301,16 +1300,22 @@
                     } catch (e) { console.warn(e); }
                 },
                 async applyGpuTuning(gpu) {
-                    if (!confirm(`GPU ${gpu.index}에 ${gpu.edit.power_limit}W / ${gpu.edit.clock_max}MHz / Fan ${gpu.edit.fan_percent}%를 적용하고 부팅 설정으로 저장할까요?`)) return;
+                    const detail = this.isWindows
+                        ? `${gpu.edit.power_limit}W / ${gpu.edit.clock_max}MHz / Fan ${gpu.edit.fan_percent}%`
+                        : `${gpu.edit.power_limit}W / ${gpu.edit.clock_max}MHz`;
+                    if (!confirm(`GPU ${gpu.index}에 ${detail}를 적용하고 부팅 설정으로 저장할까요?`)) return;
                     this.gpuTuningSaving = true;
                     try {
-                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'set', gpu_index:gpu.index, gpu_uuid:gpu.uuid, ...gpu.edit})});
+                        const payload = {action:'set', gpu_index:gpu.index, gpu_uuid:gpu.uuid, ...gpu.edit};
+                        if (!this.isWindows) payload.fan_percent = 0;
+                        const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(payload)});
                         const data = await res.json(); if(!res.ok) throw new Error(data.detail || '적용 실패');
                         await this.fetchGpuTuning(); await this.fetchGpuTopology();
                     } catch(e) { alert('GPU 설정 적용 실패: ' + e.message); } finally { this.gpuTuningSaving=false; }
                 },
                 async resetGpuTuning(gpu) {
-                    if (!confirm(`GPU ${gpu.index}에 권장 기본값 ${gpu.recommended.power_limit}W / Core ${gpu.recommended.clock_max}MHz / Fan 자동을 적용하고 부팅 설정으로 저장할까요?`)) return;
+                    const detail = this.isWindows ? ' / Fan 자동' : '';
+                    if (!confirm(`GPU ${gpu.index}에 권장 기본값 ${gpu.recommended.power_limit}W / Core ${gpu.recommended.clock_max}MHz${detail}을 적용하고 부팅 설정으로 저장할까요?`)) return;
                     this.gpuTuningSaving = true;
                     try {
                         const res = await fetch('/api/gpu/tuning', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({action:'reset',gpu_index:gpu.index,gpu_uuid:gpu.uuid})});
@@ -1328,7 +1333,7 @@
                     } catch(e) { alert('GPU 설정 비활성화 실패: '+e.message); } finally { this.gpuTuningSaving=false; }
                 },
                 async fetchMotherboardFans() {
-                    if (!this.isWindows || this.motherboardFanSaving) return;
+                    if (this.motherboardFanSaving) return;
                     try {
                         const res = await fetch('/api/motherboard-fans'); const data = await res.json();
                         if (!res.ok) throw new Error(data.detail || '메인보드 팬 조회 실패');
@@ -1502,36 +1507,109 @@
                     } catch (e) { }
                 },
 
-                async fetchDesktopMode() {
+                async fetchOsBoot() {
+                    if (this.osBoot.switching) return;
                     try {
-                        const res = await fetch('/api/desktop/mode');
-                        const d = await res.json();
-                        this.desktop = { ...this.desktop, ...d, switching: false };
-                    } catch(e) {
-                        this.desktop.available = false;
-                        this.desktop.switching = false;
-                    }
-                },
-
-                async fetchMonitorPower() {
-                    if (this.monitorPower.switching) return;
-                    try {
-                        const res = await fetch('/api/monitor/power');
-                        const d = await res.json();
-                        this.monitorPower = { ...this.monitorPower, ...d, switching: false };
-                    } catch(e) {
-                        this.monitorPower.available = false;
-                    }
-                },
-
-                async fetchSunshineMonitorOff() {
-                    if (this.sunshineMonitorOff.saving) return;
-                    try {
-                        const res = await fetch('/api/sunshine/monitor-off-on-connect');
-                        if (!res.ok) throw new Error(await res.text());
+                        const res = await fetch('/api/os-boot');
                         const data = await res.json();
-                        this.sunshineMonitorOff.enabled = !!data.enabled;
-                    } catch(e) {}
+                        this.osBoot = { ...this.osBoot, ...data, switching: false };
+                    } catch(e) {
+                        this.osBoot.available = false;
+                        this.osBoot.error = e.message;
+                    }
+                },
+
+                async switchOperatingSystem() {
+                    const target = this.osBoot.current === 'linux' ? 'windows' : 'linux';
+                    const label = target === 'windows' ? 'Windows 11' : 'Ubuntu';
+                    if (!confirm(`[운영체제 전환]\n\n다음 1회 부팅 대상을 ${label}(으)로 설정하고 3초 후 재부팅합니다.\n실행 중인 AI 작업과 저장하지 않은 내용은 종료됩니다.\n\n계속하시겠습니까?`)) return;
+                    this.osBoot.switching = true;
+                    try {
+                        const res = await fetch('/api/os-boot', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json', 'X-OS-Boot-Confirm':'confirmed'},
+                            body: JSON.stringify({target, action:'reboot'})
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.detail || JSON.stringify(data));
+                    } catch(e) {
+                        alert('OS 전환 실패: ' + e.message);
+                        this.osBoot.switching = false;
+                        this.fetchOsBoot();
+                    }
+                },
+
+                runPowerAction(action) {
+                    this.powerMenuOpen = false;
+                    const actions = {
+                        'terminate': () => this.panicKill(),
+                        'gui': () => this.setDesktopMode('gui'),
+                        'cli': () => this.setDesktopMode('cli'),
+                        'update': () => this.updateManager(),
+                        'restart-manager': () => this.restartManager(),
+                        'stop-manager': () => this.stopManager(),
+                        'switch-os': () => this.switchOperatingSystem(),
+                        'restart-system': () => this.systemPower('restart'),
+                        'shutdown-system': () => this.systemPower('shutdown')
+                    };
+                    actions[action]?.();
+                },
+
+                async updateManager() {
+                    if (this.managerUpdating) return;
+                    if (!confirm('[main_server 업데이트]\n\n현재 Git 브랜치에서 최신 커밋을 fast-forward 방식으로 가져옵니다.\n로컬 변경이 있으면 안전을 위해 중단됩니다.\n\n계속하시겠습니까?')) return;
+                    this.managerUpdating = true;
+                    try {
+                        const res = await fetch('/api/manager/update', {
+                            method: 'POST', headers: {'X-Manager-Update-Confirm':'confirmed'}
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                        alert(data.updated
+                            ? `main_server 업데이트 완료: ${data.before} → ${data.after}\n\n변경사항을 적용하려면 main_server를 다시 시작하세요.`
+                            : `main_server는 이미 최신 버전입니다. (${data.after})`);
+                    } catch(e) {
+                        alert('main_server 업데이트 실패: ' + e.message);
+                    } finally {
+                        this.managerUpdating = false;
+                    }
+                },
+
+                async stopManager() {
+                    const resume = this.isWindows ? 'start_manager.bat를 실행하세요.' : 'systemctl --user start main_server.service를 실행하세요.';
+                    if (!confirm(`[main_server 종료]\n\n관리 화면만 종료합니다. 실행 중인 AI 서비스는 유지됩니다.\n다시 사용하려면 ${resume}\n\n계속하시겠습니까?`)) return;
+                    this.powerBusy = true;
+                    try {
+                        const res = await fetch('/api/manager/stop', {
+                            method: 'POST', headers: {'X-Manager-Stop-Confirm':'confirmed'}
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                        this.isRestarting = true;
+                    } catch(e) {
+                        this.powerBusy = false;
+                        alert('main_server 종료 실패: ' + e.message);
+                    }
+                },
+
+                async systemPower(action) {
+                    const restart = action === 'restart';
+                    const label = restart ? '시스템 다시 시작' : '시스템 종료';
+                    if (!confirm(`[${label}]\n\n실행 중인 모든 작업과 저장하지 않은 내용이 종료됩니다.\n3초 후 실행합니다.\n\n계속하시겠습니까?`)) return;
+                    this.powerBusy = true;
+                    try {
+                        const res = await fetch('/api/os-boot/system-power', {
+                            method: 'POST',
+                            headers: {'Content-Type':'application/json', 'X-System-Power-Confirm':'confirmed'},
+                            body: JSON.stringify({action})
+                        });
+                        const data = await res.json().catch(() => ({}));
+                        if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+                        this.isRestarting = true;
+                    } catch(e) {
+                        this.powerBusy = false;
+                        alert(label + ' 실패: ' + e.message);
+                    }
                 },
 
                 async fetchStatus() {
@@ -1609,13 +1687,11 @@
                     } catch(e) { alert("Panic sequence failed: " + e.message); }
                 },
 
-                async toggleDesktopMode() {
-                    const target = this.desktop.mode === 'gui' ? 'cli' : 'gui';
-                    const label = target === 'gui' ? 'GUI (그래픽)' : '컴퓨트 (GDM 중지)';
-                    if (!confirm(`[데스크톱 모드 전환]\n\n현재: ${this.desktop.mode === 'gui' ? 'GUI' : '컴퓨트'} 모드\n전환: ${label} 모드\n\n컴퓨트 모드는 GDM을 중지하고 물리 화면을 tty1 로그인 콘솔로 전환합니다. AI 서버·SSH·SMB와 시스템 3389는 계속 실행되지만 3390과 Sunshine은 GUI 자동 로그인 세션이 다시 열릴 때까지 중지됩니다. 휴대폰 브라우저의 이 대시보드에서 GUI를 복구할 수 있습니다.\n\n계속하시겠습니까?`)) {
-                        return;
-                    }
-                    this.desktop.switching = true;
+                async setDesktopMode(target) {
+                    if (this.desktop.switching) return;
+                    const label = target === 'gui' ? 'GUI' : 'CLI';
+                    if (!confirm(`[${label}모드 전환]\n\n현재 모드를 확인하지 않고 ${label}모드 전환을 강제로 시도합니다.\n\n계속하시겠습니까?`)) return;
+                    this.desktop.switching = target;
                     try {
                         const res = await fetch('/api/desktop/mode', {
                             method: 'POST',
@@ -1626,48 +1702,12 @@
                             const err = await res.text();
                             throw new Error(err);
                         }
-                        const data = await res.json();
-                        if (data.mode) this.desktop.mode = data.mode;
-                        setTimeout(() => this.fetchDesktopMode(), 3000);
+                        await res.json();
+                        alert(`${label}모드 전환 명령을 실행했습니다.`);
                     } catch(e) {
                         alert("모드 전환 실패: " + e.message);
-                        this.desktop.switching = false;
-                    }
-                },
-
-                async setMonitorPower(target) {
-                    const label = target === 'off' ? '끄기' : '켜기';
-                    if (!confirm(`현재 표시 상태와 관계없이 DDC/CI 물리 모니터 ${label} 명령을 강제로 전송하시겠습니까?\nCLI 모드에서도 켜기 명령을 실행할 수 있습니다.`)) return;
-                    this.monitorPower.switching = target;
-                    try {
-                        const res = await fetch('/api/monitor/power', {
-                            method: 'POST', headers: {'Content-Type':'application/json'},
-                            body: JSON.stringify({state: target})
-                        });
-                        if (!res.ok) throw new Error(await res.text());
-                        this.monitorPower.state = target;
-                    } catch(e) {
-                        alert('물리 모니터 전환 실패: ' + e.message);
                     } finally {
-                        this.monitorPower.switching = '';
-                        setTimeout(() => this.fetchMonitorPower(), 1000);
-                    }
-                },
-
-                async toggleSunshineMonitorOff() {
-                    const enabled = !this.sunshineMonitorOff.enabled;
-                    this.sunshineMonitorOff.saving = true;
-                    try {
-                        const res = await fetch('/api/sunshine/monitor-off-on-connect', {
-                            method: 'POST', headers: {'Content-Type':'application/json'},
-                            body: JSON.stringify({enabled})
-                        });
-                        if (!res.ok) throw new Error(await res.text());
-                        this.sunshineMonitorOff.enabled = enabled;
-                    } catch(e) {
-                        alert('Moonlight 자동 화면끄기 설정 실패: ' + e.message);
-                    } finally {
-                        this.sunshineMonitorOff.saving = false;
+                        this.desktop.switching = '';
                     }
                 },
 
@@ -1805,10 +1845,12 @@
                 },
 
                 async restartManager() {
-                    if(!confirm("Restart Console Service? (Running AI services will remain active)")) return;
+                    if(!confirm("[main_server 다시 시작]\n\n관리 화면만 다시 시작합니다. 실행 중인 AI 서비스는 유지됩니다.\n\n계속하시겠습니까?")) return;
                     try {
-                        await fetch('/api/restart', { method: 'POST' });
+                        const res = await fetch('/api/restart', { method: 'POST' });
+                        if (!res.ok) throw new Error(await res.text());
                         this.isRestarting = true;
+                        this.restartCountdown = 6;
                         const timer = setInterval(() => {
                             this.restartCountdown--;
                             if (this.restartCountdown <= 0) {
@@ -1816,7 +1858,7 @@
                                 window.location.reload();
                             }
                         }, 1000);
-                    } catch (e) { alert("Restart failed"); }
+                    } catch (e) { alert("main_server 다시 시작 실패: " + e.message); }
                 },
 
                 async fetchScanData() {
@@ -2031,9 +2073,7 @@
                 this.fetchScanData();
                 this.fetchStatus();
                 this.fetchHardware();
-                this.fetchDesktopMode();
-                this.fetchMonitorPower();
-                this.fetchSunshineMonitorOff();
+                this.fetchOsBoot();
                 
                 // Active tabs refresh lightweight values every 5 seconds and
                 // heavier topology/settings every 10 seconds. Hidden tabs drop
@@ -2048,11 +2088,9 @@
                     this.fetchMotherboardFans();
                     if (document.hidden || dashboardPoll % 2 === 0) {
                         this.fetchGpuTopology();
-                        this.fetchDesktopMode();
-                        this.fetchSunshineMonitorOff();
-                        this.fetchMonitorPower();
                         this.fetchGpuThermalEvents();
                         this.fetchCmp170Unlock();
+                        this.fetchOsBoot();
                     }
                 }, 5000);
             }

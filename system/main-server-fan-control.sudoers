@@ -1,0 +1,1 @@
+flux ALL=(root) NOPASSWD: /usr/local/sbin/main-server-fan-control *

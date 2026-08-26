@@ -29,12 +29,14 @@ from media import router as media_router
 from dataset_api import router as dataset_router
 from vast_api import router as vast_router
 from process_mgr import Service, find_process, tail
-from infrastructure import router as infrastructure_router, vllm_service
+from infrastructure import router as infrastructure_router, vllm_service, _ensure_linux_nvcc
+from os_boot import router as os_boot_router
 from motherboard_fan import (
     controller as motherboard_fan_controller,
     save_settings as save_motherboard_fan_settings,
 )
 import pawnio_bootstrap
+from comfy_model_paths import ModelPathError, ensure_model_config
 import cmp170_service
 
 HOST = "0.0.0.0"
@@ -51,7 +53,6 @@ LLAMA_SETTINGS_FILE = os.path.join(
     BASE_DIR, "llama_windows_settings.json" if IS_WINDOWS else "llama_settings.json"
 )
 LEGACY_LLAMA_SETTINGS_FILE = os.path.join(BASE_DIR, "llama_settings.json")
-SUNSHINE_MONITOR_SETTINGS_FILE = os.path.join(BASE_DIR, "sunshine_monitor_settings.json")
 LLAMA_PORT = int(settings.get("llama_port") or 8080)
 
 services = {
@@ -68,6 +69,7 @@ _catalog_scan_last = 0.0
 _catalog_scan_inflight = False
 _sampler_started = threading.Event()
 _startup_state_lock = threading.Lock()
+_manager_update_lock = threading.Lock()
 _startup_state = {
     "ready": False,
     "phase": "starting",
@@ -99,6 +101,7 @@ app.include_router(media_router)
 app.include_router(dataset_router)
 app.include_router(vast_router)
 app.include_router(infrastructure_router)
+app.include_router(os_boot_router)
 
 
 # ---------- 유틸 ----------
@@ -232,15 +235,16 @@ def load_comfy_settings():
 def save_comfy_settings(data):
     merged = {
         "listen": True,
-        "use_sage_attention": False,
-        "disable_cuda_malloc": False,
+        "use_sage_attention": True,
+        "disable_cuda_malloc": True,
         "preview_method_none": True,
         "cache_none": False,
         "reserve_vram_enabled": True,
         "reserve_vram": 1.0,
         "disable_async_offload": False,
+        "disable_dynamic_vram": True,
         "fast_disk": False,
-        "fast_fp16_accumulation": True,
+        "fast_fp16_accumulation": False,
         "gpu_device": "",
     }
     existing = load_comfy_settings()
@@ -250,7 +254,7 @@ def save_comfy_settings(data):
     merged.update({k: existing[k] for k in merged if k in existing})
     for key in (
         "listen", "use_sage_attention", "disable_cuda_malloc", "preview_method_none", "cache_none", "reserve_vram_enabled",
-        "disable_async_offload", "fast_disk", "fast_fp16_accumulation",
+        "disable_async_offload", "disable_dynamic_vram", "fast_disk", "fast_fp16_accumulation",
     ):
         if key in data:
             merged[key] = bool(data[key])
@@ -619,6 +623,8 @@ def _comfy_args():
         args += ["--reserve-vram", str(s.get("reserve_vram", 1.0))]
     if s.get("disable_async_offload"):
         args += ["--disable-async-offload"]
+    if s.get("disable_dynamic_vram"):
+        args += ["--disable-dynamic-vram"]
     if s.get("fast_disk"):
         args += ["--fast-disk"]
     if s.get("fast_fp16_accumulation"):
@@ -1159,7 +1165,7 @@ def llama_releases():
         stable = next(
             (r for r in rels if not NIGHTLY_TAG_RE.fullmatch(r.get("tag_name", ""))), None
         ) or {}
-        nightly = next(
+        windows_nightly = next(
             (
                 r
                 for r in rels
@@ -1168,12 +1174,15 @@ def llama_releases():
             None,
         )
 
-        if IS_WINDOWS and nightly:
-            data = nightly  # Windows: CUDA 프리빌트가 있는 최신 빌드
+        latest_nightly = next(
+            (r for r in rels if NIGHTLY_TAG_RE.fullmatch(r.get("tag_name", ""))), None
+        )
+        if IS_WINDOWS and windows_nightly:
+            data = windows_nightly  # Windows: CUDA 프리빌트가 있는 최신 빌드
         else:
-            # GitHub의 첫 페이지가 전부 nightly인 시기에도 Linux에서 빈
-            # 버전을 반환하지 않는다. 모든 bNNNN 태그는 git 빌드 가능하다.
-            data = stable or (rels[0] if rels else {})
+            # Linux는 오래된 stable(v0.3.0)이 아니라 최신 bNNNN 소스를
+            # CUDA로 빌드한다. nightly 태그는 git 설치가 가능하다.
+            data = latest_nightly or stable or (rels[0] if rels else {})
         tag = data.get("tag_name", "")
         # 설치 여부: <root>/llama-<tag> 또는 <root>/llama-<tag>-cuda* 중 하나라도 있으면 True
         root = settings.get("llama_install_root")
@@ -1183,7 +1192,7 @@ def llama_releases():
         return {
             "tag_name": tag,
             "stable_tag": stable.get("tag_name", ""),
-            "nightly_tag": nightly.get("tag_name", "") if nightly else "",
+            "nightly_tag": latest_nightly.get("tag_name", "") if latest_nightly else "",
             "published_at": data.get("published_at"),
             "html_url": data.get("html_url"),
             "platform": "linux" if not IS_WINDOWS else "windows",
@@ -1228,67 +1237,153 @@ def _safe_release_tag(tag):
     return bool(re.fullmatch(r"[A-Za-z0-9._-]+", str(tag or "").strip()))
 
 
+def _run_llama_logged(command, *, cwd=None, env=None):
+    _llama_install_log("실행: " + " ".join(str(value) for value in command))
+    log_path = os.path.join(BASE_DIR, "logs", "llama_install.log")
+    with open(log_path, "a", encoding="utf-8", errors="replace") as stream:
+        subprocess.run(
+            command, cwd=cwd, env=env, stdout=stream, stderr=subprocess.STDOUT,
+            check=True, creationflags=NO_WINDOW,
+        )
+
+
+def _ensure_llama_linux_environment():
+    """Install Linux build prerequisites and prepare only the managed root."""
+    if IS_WINDOWS:
+        return {}
+    LLAMA_BUILD_STATE["message"] = "Linux CUDA 빌드 환경 확인"
+    missing = []
+    if not shutil.which("cmake"):
+        missing.append("cmake")
+    if not shutil.which("ninja"):
+        missing.append("ninja-build")
+    package = subprocess.run(
+        ["dpkg-query", "-W", "-f=${Status}", "libcurl4-openssl-dev"],
+        capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW,
+    )
+    if "ok installed" not in package.stdout:
+        missing.append("libcurl4-openssl-dev")
+    if missing:
+        prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        _run_llama_logged([*prefix, "env", "DEBIAN_FRONTEND=noninteractive", "apt-get", "update"])
+        _run_llama_logged([
+            *prefix, "env", "DEBIAN_FRONTEND=noninteractive",
+            "apt-get", "install", "-y", *missing,
+        ])
+
+    nvcc = _ensure_linux_nvcc("13.0")
+    root = Path(settings.get("llama_install_root")).resolve()
+    if root == Path("/opt/llama") and not root.exists():
+        prefix = [] if os.geteuid() == 0 else ["sudo", "-n"]
+        _run_llama_logged([
+            *prefix, "install", "-d", "-o", str(os.getuid()), "-g", str(os.getgid()),
+            "-m", "0755", str(root),
+        ])
+    else:
+        root.mkdir(parents=True, exist_ok=True)
+    if not root.is_dir() or not os.access(root, os.W_OK | os.X_OK):
+        raise RuntimeError(f"llama.cpp 설치 경로에 쓸 수 없습니다: {root}")
+
+    architecture_result = subprocess.run(
+        ["nvidia-smi", "--query-gpu=compute_cap", "--format=csv,noheader,nounits"],
+        capture_output=True, text=True, timeout=10, creationflags=NO_WINDOW,
+    )
+    architectures = sorted({
+        value.strip().replace(".", "") for value in architecture_result.stdout.splitlines()
+        if re.fullmatch(r"\d+\.\d+", value.strip())
+    })
+    build_env = dict(os.environ)
+    cuda_root = str(Path(nvcc).resolve().parent.parent)
+    build_env["CUDACXX"] = nvcc
+    build_env["CUDA_HOME"] = cuda_root
+    return {
+        "root": str(root), "nvcc": nvcc, "cuda_root": cuda_root,
+        "architectures": architectures, "env": build_env,
+    }
+
+
 def _build_llama_git(tag):
     """최신 llama.cpp를 git에서 클론해 CUDA로 빌드하고 /opt/llama-<tag> 에 설치한다."""
     LLAMA_BUILD_STATE.update(busy=True, tag=tag, message="시작", started_at=time.time())
+    stage_dir = None
     try:
         _llama_install_log(f"===== llama.cpp {tag} git 빌드 시작 =====")
+        environment = _ensure_llama_linux_environment()
+        install_root = environment["root"]
 
         # 소스 클론 (이미 있으면 최신 태그로 갱신)
         # Keep build sources under the configured llama.cpp root so changing
         # the installation directory really moves the whole managed tree.
-        src_dir = os.path.join(settings.get("llama_install_root"), ".src", tag)
-        os.makedirs(src_dir, exist_ok=True)
+        src_dir = os.path.join(install_root, ".src", tag)
+        os.makedirs(os.path.dirname(src_dir), exist_ok=True)
         if not os.path.exists(os.path.join(src_dir, ".git")):
-            _llama_install_log(f"git clone --depth 1 --branch {tag} {LLAMA_GIT_REPO}")
-            subprocess.run(
+            _run_llama_logged(
                 ["git", "clone", "--depth", "1", "--branch", tag, LLAMA_GIT_REPO, src_dir],
-                check=True, creationflags=NO_WINDOW,
+                env=environment["env"],
             )
         else:
-            _llama_install_log("소스 이미 존재, git fetch")
-            subprocess.run(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=src_dir, check=True, creationflags=NO_WINDOW)
-            subprocess.run(["git", "checkout", tag], cwd=src_dir, check=True, creationflags=NO_WINDOW)
+            _run_llama_logged(["git", "fetch", "--depth", "1", "origin", "tag", tag], cwd=src_dir, env=environment["env"])
+            _run_llama_logged(["git", "checkout", "--force", tag], cwd=src_dir, env=environment["env"])
 
         build_dir = os.path.join(src_dir, "build")
         os.makedirs(build_dir, exist_ok=True)
 
-        _llama_install_log("cmake -B build -DGGML_CUDA=ON -DCMAKE_BUILD_TYPE=Release")
         LLAMA_BUILD_STATE["message"] = "CMake 구성 (GGML_CUDA=ON)"
-        subprocess.run(
-            [
-                "cmake", "-B", "build",
-                "-DGGML_CUDA=ON",
-                "-DCMAKE_BUILD_TYPE=Release",
-                "-DGGML_CUDA_F16=ON",
-                "-DBUILD_SHARED_LIBS=OFF",
-            ],
-            cwd=src_dir, check=True, creationflags=NO_WINDOW,
+        configure = [
+            "cmake", "-S", ".", "-B", "build", "-G", "Ninja",
+            "-DGGML_CUDA=ON", "-DCMAKE_BUILD_TYPE=Release",
+            "-DGGML_CUDA_F16=ON", "-DBUILD_SHARED_LIBS=OFF", "-DLLAMA_CURL=OFF",
+            f"-DCMAKE_CUDA_COMPILER={environment['nvcc']}",
+        ]
+        if environment["architectures"]:
+            configure.append("-DCMAKE_CUDA_ARCHITECTURES=" + ";".join(environment["architectures"]))
+        _run_llama_logged(configure, cwd=src_dir, env=environment["env"])
+
+        nproc = min(os.cpu_count() or 4, 16)
+        LLAMA_BUILD_STATE["message"] = "CUDA 빌드 중"
+        _run_llama_logged(
+            ["cmake", "--build", "build", "--target", "llama-server", "llama-cli", "-j", str(nproc)],
+            cwd=src_dir, env=environment["env"],
         )
 
-        nproc = os.cpu_count() or 4
-        _llama_install_log(f"cmake --build build -j{nproc}")
-        LLAMA_BUILD_STATE["message"] = "CUDA 빌드 중"
-        subprocess.run(["cmake", "--build", "build", "-j", str(nproc)], cwd=src_dir, check=True, creationflags=NO_WINDOW)
-
-        # 설치 위치: /opt/llama-<tag>/bin/llama-server 등
-        install_dir = os.path.join(settings.get("llama_install_root"), f"llama-{tag}")
-        os.makedirs(os.path.join(install_dir, "bin"), exist_ok=True)
+        install_dir = os.path.join(install_root, f"llama-{tag}")
+        unique = f"{os.getpid()}-{threading.get_ident()}-{int(time.time() * 1000)}"
+        stage_dir = f"{install_dir}.installing-{unique}"
+        backup_dir = f"{install_dir}.backup-{unique}"
+        os.makedirs(os.path.join(stage_dir, "bin"))
         bin_src = os.path.join(build_dir, "bin")
-        if os.path.isdir(bin_src):
-            for fn in os.listdir(bin_src):
-                shutil.copy2(os.path.join(bin_src, fn), os.path.join(install_dir, "bin"))
-        else:
-            for exe in ("llama-server", "llama-cli", "llama-quantize"):
-                src = os.path.join(build_dir, exe)
-                if os.path.isfile(src):
-                    shutil.copy2(src, os.path.join(install_dir, "bin"))
+        for fn in os.listdir(bin_src):
+            source = os.path.join(bin_src, fn)
+            if os.path.isfile(source):
+                shutil.copy2(source, os.path.join(stage_dir, "bin"))
+        staged_exe = _llama_server_exe(stage_dir)
+        if not staged_exe:
+            raise RuntimeError("빌드 결과에 llama-server가 없습니다")
+        verify = subprocess.run(
+            [staged_exe, "--version"], capture_output=True, text=True,
+            timeout=30, creationflags=NO_WINDOW,
+        )
+        if verify.returncode:
+            raise RuntimeError("빌드된 llama-server 실행 검증 실패: " + (verify.stderr.strip() or verify.stdout.strip()))
+        if os.path.exists(install_dir):
+            os.replace(install_dir, backup_dir)
+        try:
+            os.replace(stage_dir, install_dir)
+            stage_dir = None
+        except Exception:
+            if os.path.exists(backup_dir) and not os.path.exists(install_dir):
+                os.replace(backup_dir, install_dir)
+            raise
+        if os.path.exists(backup_dir):
+            shutil.rmtree(backup_dir, ignore_errors=True)
         _llama_install_log(f"설치 완료: {install_dir}")
         LLAMA_BUILD_STATE["message"] = f"설치 완료: {install_dir}"
     except Exception as e:
         _llama_install_log(f"빌드 실패: {e}")
         LLAMA_BUILD_STATE["message"] = f"실패: {e}"
     finally:
+        if stage_dir and os.path.isdir(stage_dir):
+            shutil.rmtree(stage_dir, ignore_errors=True)
         LLAMA_BUILD_STATE["busy"] = False
         scan_llama_versions()
 
@@ -1728,6 +1823,10 @@ def llama_install(tag: str = "", asset: str = ""):
     tag = _safe_tag(tag)
     if LLAMA_BUILD_STATE["busy"]:
         raise HTTPException(409, "이미 빌드가 진행 중입니다.")
+    # Mark the request as busy before starting the worker.  Otherwise the UI's
+    # first status poll can race the thread and incorrectly conclude that the
+    # installation already finished.
+    LLAMA_BUILD_STATE.update(busy=True, tag=tag, message="설치 대기 중", started_at=time.time())
     if IS_WINDOWS:
         threading.Thread(target=_install_llama_windows, args=(tag, asset), daemon=True).start()
     else:
@@ -1789,11 +1888,20 @@ def comfy_start(data: dict | None = None):
     comfy_dir = settings.get("comfyui_dir")
     if not comfy_dir or not os.path.isdir(comfy_dir):
         raise HTTPException(400, f"ComfyUI 폴더가 없습니다: {comfy_dir}")
+    try:
+        model_config, resolved_model_root = ensure_model_config(
+            comfy_dir, settings.get("comfyui_model_root"), try_mount=True,
+        )
+    except ModelPathError as error:
+        raise HTTPException(400, str(error)) from error
+    settings.save({"comfyui_model_root": str(resolved_model_root)})
     cmd = [
         _comfy_python(),
         "main.py",
         "--port",
         str(settings.get("comfyui_port")),
+        "--extra-model-paths-config",
+        str(model_config),
     ]
     if saved.get("listen"):
         cmd += ["--listen", "0.0.0.0"]
@@ -2294,8 +2402,10 @@ def gpu_tuning_set(data: dict):
         power = int(data["power_limit"]) if action == "set" else None
         clock = int(data["clock_max"]) if action == "set" else None
         fan = int(data["fan_percent"]) if action == "set" else None
-        if fan is not None and fan != 0 and not 20 <= fan <= 100:
+        if IS_WINDOWS and fan is not None and fan != 0 and not 20 <= fan <= 100:
             raise ValueError("GPU 팬은 자동(0) 또는 20~100%여야 합니다")
+        if not IS_WINDOWS and fan not in (None, 0):
+            raise ValueError("Linux에서는 GPU 자체 팬을 제어하지 않습니다. 메인보드 PWM 팬 제어를 사용하세요")
     except (KeyError, TypeError, ValueError) as error:
         raise HTTPException(400, f"GPU 설정값이 올바르지 않습니다: {error}") from error
 
@@ -2423,6 +2533,77 @@ def restart():
     return {"ok": True}
 
 
+def _update_manager_git():
+    if not os.path.isdir(os.path.join(BASE_DIR, ".git")):
+        raise HTTPException(400, "현재 main_server 폴더는 Git 저장소가 아닙니다")
+
+    def git(*args, timeout=180):
+        return subprocess.run(
+            ["git", *args], cwd=BASE_DIR, capture_output=True, text=True,
+            errors="replace", timeout=timeout, creationflags=NO_WINDOW,
+        )
+
+    dirty = git("status", "--porcelain", timeout=20)
+    if dirty.returncode:
+        raise HTTPException(500, dirty.stderr.strip() or "Git 상태 확인 실패")
+    if dirty.stdout.strip():
+        raise HTTPException(409, "커밋하지 않은 로컬 변경이 있어 업데이트를 중단했습니다")
+    branch = git("branch", "--show-current", timeout=20).stdout.strip()
+    if not branch:
+        raise HTTPException(409, "detached HEAD에서는 자동 업데이트할 수 없습니다")
+    before = git("rev-parse", "--short", "HEAD", timeout=20).stdout.strip()
+    fetch = git("fetch", "--prune", "origin", branch)
+    if fetch.returncode:
+        raise HTTPException(500, fetch.stderr.strip() or fetch.stdout.strip() or "Git fetch 실패")
+    merge = git("merge", "--ff-only", f"origin/{branch}")
+    if merge.returncode:
+        raise HTTPException(409, merge.stderr.strip() or merge.stdout.strip() or "fast-forward 업데이트 실패")
+    after = git("rev-parse", "--short", "HEAD", timeout=20).stdout.strip()
+    return {
+        "ok": True, "updated": before != after, "before": before, "after": after,
+        "message": (merge.stdout or "").strip() or "이미 최신 버전입니다",
+    }
+
+
+@app.post("/api/manager/update")
+def update_manager(request: Request):
+    if request.headers.get("X-Manager-Update-Confirm") != "confirmed":
+        raise HTTPException(409, "main_server 업데이트 확인 헤더가 필요합니다")
+    if not _manager_update_lock.acquire(blocking=False):
+        raise HTTPException(409, "main_server 업데이트가 이미 진행 중입니다")
+    try:
+        return _update_manager_git()
+    finally:
+        _manager_update_lock.release()
+
+
+@app.post("/api/manager/stop")
+def stop_manager(request: Request):
+    if request.headers.get("X-Manager-Stop-Confirm") != "confirmed":
+        raise HTTPException(409, "main_server 종료 확인 헤더가 필요합니다")
+    threading.Thread(target=_stop_manager_now, daemon=True).start()
+    return {"ok": True, "stopping": True}
+
+
+def _stop_manager_now():
+    time.sleep(1.0)
+    if IS_WINDOWS:
+        try:
+            Path(BASE_DIR, ".manager-stop").write_text("stopped from web UI\n", encoding="utf-8")
+        finally:
+            os._exit(0)
+    result = subprocess.run(
+        [
+            "systemd-run", "--user", "--quiet", "--collect",
+            "--unit=main-server-manager-stop", "--on-active=1s",
+            "systemctl", "--user", "stop", "main_server.service",
+        ],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        print(f"[manager stop] {result.stderr.strip() or result.stdout.strip()}")
+
+
 def _restart_now():
     if IS_WINDOWS:
         # systemd가 없으므로 분리 프로세스(manager_restarter.py)가 포트 8999가
@@ -2456,10 +2637,9 @@ def _restart_now():
 # ---------- 데스크톱 GUI/CLI 모드 전환 ----------
 
 DESKTOP_TOGGLE_HELPER = "/usr/local/sbin/main-server-desktop-toggle"
-MONITOR_POWER_HELPER = "/usr/local/sbin/main-server-monitor-power"
 
 
-def _desktop_toggle(args, timeout=60):
+def _desktop_toggle(args, timeout=120):
     if IS_WINDOWS:
         raise HTTPException(400, "데스크톱 모드 전환은 Linux에서만 지원합니다")
     if not os.path.exists(DESKTOP_TOGGLE_HELPER):
@@ -2481,19 +2661,6 @@ def _desktop_toggle(args, timeout=60):
     return proc.stdout.strip()
 
 
-@app.get("/api/desktop/mode")
-def desktop_mode():
-    if IS_WINDOWS:
-        return {"available": False, "mode": "unknown", "error": "Linux only"}
-    try:
-        mode = _desktop_toggle(["get"], timeout=10)
-    except HTTPException as exc:
-        return {"available": False, "mode": "unknown", "error": str(exc.detail)}
-    if mode.startswith("unknown:"):
-        return {"available": False, "mode": "unknown", "target": mode.split(":", 1)[1]}
-    return {"available": True, "mode": mode}
-
-
 @app.post("/api/desktop/mode")
 def desktop_mode_set(payload: dict = None):
     mode = (payload or {}).get("mode")
@@ -2501,58 +2668,6 @@ def desktop_mode_set(payload: dict = None):
         raise HTTPException(400, "mode는 'gui' 또는 'cli'여야 합니다")
     new_mode = _desktop_toggle(["set", mode])
     return {"ok": True, "mode": new_mode}
-
-
-def _monitor_power(action="status", timeout=30):
-    if IS_WINDOWS:
-        raise HTTPException(400, "물리 모니터 제어는 Linux에서만 지원합니다")
-    if not os.path.exists(MONITOR_POWER_HELPER):
-        raise HTTPException(503, "모니터 전원 helper가 설치되지 않았습니다")
-    try:
-        result = subprocess.run(
-            ["sudo", "-n", MONITOR_POWER_HELPER, action],
-            capture_output=True, text=True, timeout=timeout,
-        )
-    except subprocess.TimeoutExpired as error:
-        raise HTTPException(504, "모니터 전원 제어 시간이 초과되었습니다") from error
-    if result.returncode:
-        raise HTTPException(500, result.stderr.strip() or result.stdout.strip() or "모니터 전원 제어 실패")
-    parts = result.stdout.strip().split()
-    if action == "status":
-        if len(parts) != 3:
-            raise HTTPException(500, "모니터 상태 응답을 해석하지 못했습니다")
-        return {"available": parts[0] == "available", "state": parts[1], "count": int(parts[2])}
-    return {"ok": True, "state": action, "message": result.stdout.strip()}
-
-
-@app.get("/api/monitor/power")
-def monitor_power_get():
-    if IS_WINDOWS:
-        return {"available": False, "state": "unknown", "count": 0, "error": "Linux only"}
-    return _monitor_power()
-
-
-@app.post("/api/monitor/power")
-def monitor_power_set(payload: dict = None):
-    state = str((payload or {}).get("state") or "")
-    if state not in ("on", "off"):
-        raise HTTPException(400, "state는 'on' 또는 'off'여야 합니다")
-    return _monitor_power(state, timeout=45)
-
-
-@app.get("/api/sunshine/monitor-off-on-connect")
-def sunshine_monitor_off_on_connect_get():
-    data = _read_json(SUNSHINE_MONITOR_SETTINGS_FILE, {"enabled": True})
-    return {"enabled": bool(data.get("enabled", True))}
-
-
-@app.post("/api/sunshine/monitor-off-on-connect")
-def sunshine_monitor_off_on_connect_set(payload: dict = None):
-    enabled = (payload or {}).get("enabled")
-    if not isinstance(enabled, bool):
-        raise HTTPException(400, "enabled는 true 또는 false여야 합니다")
-    _write_json(SUNSHINE_MONITOR_SETTINGS_FILE, {"enabled": enabled})
-    return {"ok": True, "enabled": enabled}
 
 
 # ---------- 시작 ----------

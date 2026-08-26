@@ -9,6 +9,7 @@ import os
 import posixpath
 import re
 import subprocess
+import tempfile
 import threading
 import time
 from ctypes import wintypes
@@ -21,6 +22,7 @@ from config import BASE_DIR
 SETTINGS_FILE = Path(BASE_DIR) / ("nas_windows_settings.json" if os.name == "nt" else "nas_linux_settings.json")
 CREDENTIALS_FILE = Path(BASE_DIR) / ("nas_credentials_windows.json" if os.name == "nt" else "nas_credentials_linux")
 LOCK = threading.RLock()
+LAST_ERROR = ""
 NO_WINDOW = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
 
 DEFAULTS: dict[str, Any] = {
@@ -198,6 +200,41 @@ def _is_linux_mounted(path: str) -> bool:
     return False
 
 
+def _linux_mount_source(path: str) -> tuple[str, str] | None:
+    """Return (filesystem, source) for an exact Linux mount point."""
+    target = os.path.realpath(path)
+    try:
+        with open("/proc/self/mountinfo", encoding="utf-8") as stream:
+            for line in stream:
+                fields = line.split()
+                if len(fields) <= 6 or fields[4].replace("\\040", " ") != target or "-" not in fields:
+                    continue
+                separator = fields.index("-")
+                if len(fields) > separator + 2:
+                    return fields[separator + 1], fields[separator + 2].replace("\\040", " ")
+    except OSError:
+        pass
+    return None
+
+
+def _friendly_smb_error(output: str, username: str, remote: str) -> str:
+    text = str(output or "").strip()
+    upper = text.upper()
+    if "NT_STATUS_LOGON_FAILURE" in upper or "STATUS_LOGON_FAILURE" in upper:
+        return f"NAS 로그인 거부: 저장된 계정 '{username}'의 계정명 또는 암호를 확인하세요 ({remote})"
+    if "NT_STATUS_ACCOUNT_DISABLED" in upper:
+        return f"NAS 계정 '{username}'이 비활성화되어 있습니다"
+    if "NT_STATUS_PASSWORD_EXPIRED" in upper:
+        return f"NAS 계정 '{username}'의 암호가 만료되었습니다"
+    if "NT_STATUS_BAD_NETWORK_NAME" in upper:
+        return f"NAS 공유 폴더를 찾을 수 없습니다: {remote}"
+    if "NT_STATUS_ACCESS_DENIED" in upper or "PERMISSION DENIED" in upper:
+        return f"NAS 계정 '{username}'에 공유 폴더 접근 권한이 없습니다: {remote}"
+    if "CONNECTION REFUSED" in upper or "NO ROUTE TO HOST" in upper:
+        return f"NAS SMB 서버에 연결할 수 없습니다: {remote}"
+    return text or f"NAS 연결에 실패했습니다: {remote}"
+
+
 def status() -> dict[str, Any]:
     configured = load_settings()
     saved_credentials = _read_json(CREDENTIALS_FILE, {})
@@ -224,50 +261,99 @@ def status() -> dict[str, Any]:
         "comfyui_remote": display_remote.rstrip("\\/") + ("\\" if os.name == "nt" else "/") + configured["comfyui_subdir"].replace("/", "\\" if os.name == "nt" else "/"),
         "main_local": main_local,
         "comfyui_local": comfy_local,
+        "last_error": LAST_ERROR,
     }
 
 
 def mount() -> dict[str, Any]:
+    global LAST_ERROR
     with LOCK:
-        configured = load_settings()
-        if not configured["enabled"]:
-            raise MountError("NAS 자동 마운트가 꺼져 있습니다")
-        username, password = _load_credentials()
-        if os.name == "nt":
-            remote = rf"\\{configured['server']}\{configured['share']}"
-            drive = configured["windows_drive"]
-            # Clear only our configured drive mapping. Do not disconnect other
-            # sessions to the same NAS because they may belong to the user.
-            _run(["net", "use", drive, "/delete", "/y"], timeout=15)
-            result = _run(["net", "use", drive, remote, password, f"/user:{username}", "/persistent:yes"])
-            if result.returncode != 0:
-                raise MountError((result.stderr or result.stdout or "Windows NAS 연결 실패").strip())
-        else:
-            _mount_linux(configured, username, password)
-        return status()
+        try:
+            configured = load_settings()
+            if not configured["enabled"]:
+                raise MountError("NAS 자동 마운트가 꺼져 있습니다")
+            username, password = _load_credentials()
+            if os.name == "nt":
+                remote = rf"\\{configured['server']}\{configured['share']}"
+                drive = configured["windows_drive"]
+                # Clear only our configured drive mapping. Do not disconnect other
+                # sessions to the same NAS because they may belong to the user.
+                _run(["net", "use", drive, "/delete", "/y"], timeout=15)
+                result = _run(["net", "use", drive, remote, password, f"/user:{username}", "/persistent:yes"])
+                if result.returncode != 0:
+                    raise MountError((result.stderr or result.stdout or "Windows NAS 연결 실패").strip())
+            else:
+                _mount_linux(configured, username, password)
+            LAST_ERROR = ""
+            return status()
+        except Exception as error:
+            LAST_ERROR = str(error)
+            raise
 
 
 def _mount_linux(configured: dict[str, Any], username: str, password: str) -> None:
     remote = f"//{configured['server']}/{configured['share']}"
-    credential_path = CREDENTIALS_FILE
-    # mount.cifs credentials use a different file format from our private JSON.
-    mount_credentials = CREDENTIALS_FILE.with_suffix(".cifs")
-    mount_credentials.write_text(f"username={username}\npassword={password}\n", encoding="utf-8")
+    # mount.cifs and smbclient share this private, short-lived auth file. This
+    # keeps the password out of process arguments and removes it after use.
+    credential_fd, credential_name = tempfile.mkstemp(prefix="main-server-nas-", suffix=".auth")
+    mount_credentials = Path(credential_name)
+    with os.fdopen(credential_fd, "w", encoding="utf-8") as stream:
+        stream.write(f"username={username}\npassword={password}\n")
     os.chmod(mount_credentials, 0o600)
     uid, gid = os.getuid(), os.getgid()
     common = f"credentials={mount_credentials},uid={uid},gid={gid},iocharset=utf8,vers={configured['smb_version']},file_mode=0664,dir_mode=0775,noserverino"
+    main_target = configured["linux_mount"]
+    comfy_target = configured["linux_comfy_mount"]
+    mounted_main_here = False
     try:
-        for target, prefix in ((configured["linux_mount"], ""), (configured["linux_comfy_mount"], configured["comfyui_subdir"])):
+        # Preflight returns the real SMB status (wrong password, missing share,
+        # access denied) instead of mount(8)'s misleading generic dmesg text.
+        preflight = _run([
+            "smbclient", remote, "-A", str(mount_credentials), "-m", "SMB3", "-c", "quit",
+        ], timeout=20)
+        if preflight.returncode != 0:
+            raise MountError(_friendly_smb_error(preflight.stderr or preflight.stdout, username, remote))
+
+        for target in (main_target, comfy_target):
             if not Path(target).is_dir():
                 result = _run(_linux_command(["mkdir", "-p", target]))
                 if result.returncode != 0:
                     raise MountError((result.stderr or result.stdout or f"마운트 폴더 생성 실패: {target}").strip())
-            if _is_linux_mounted(target):
-                continue
-            options = common + (f",prefixpath={prefix}" if prefix else "")
-            result = _run(_linux_command(["mount", "-t", "cifs", remote, target, "-o", options]))
+
+        existing = _linux_mount_source(main_target)
+        if existing:
+            filesystem, source = existing
+            if filesystem != "cifs" or source.rstrip("/").lower() != remote.lower():
+                raise MountError(f"다른 파일시스템이 이미 마운트되어 있습니다: {main_target} ({filesystem} {source})")
+        else:
+            result = _run(_linux_command(["mount", "-t", "cifs", remote, main_target, "-o", common]))
             if result.returncode != 0:
-                raise MountError((result.stderr or result.stdout or f"Linux NAS 마운트 실패: {target}").strip())
+                raise MountError(_friendly_smb_error(result.stderr or result.stdout, username, remote))
+            mounted_main_here = True
+
+        comfy_source = Path(main_target).joinpath(*configured["comfyui_subdir"].split("/"))
+        if not comfy_source.is_dir():
+            raise MountError(f"NAS 안에서 ComfyUI 폴더를 찾을 수 없습니다: {comfy_source}")
+        existing = _linux_mount_source(comfy_target)
+        if existing:
+            filesystem, source = existing
+            normalized_source = source.rstrip("/").lower()
+            normalized_remote = remote.lower()
+            # A CIFS bind mount is reported as //server/share[/sub/path] in
+            # /proc/self/mountinfo, not as the local bind source path.
+            if filesystem != "cifs" or not (
+                normalized_source == normalized_remote
+                or normalized_source.startswith(normalized_remote + "[")
+            ):
+                raise MountError(f"다른 파일시스템이 이미 마운트되어 있습니다: {comfy_target} ({filesystem} {source})")
+        else:
+            result = _run(_linux_command(["mount", "--bind", str(comfy_source), comfy_target]))
+            if result.returncode != 0:
+                raise MountError((result.stderr or result.stdout or f"ComfyUI NAS 연결 실패: {comfy_target}").strip())
+    except Exception:
+        if mounted_main_here and _is_linux_mounted(main_target):
+            _run(_linux_command(["umount", main_target]))
+        raise
     finally:
         try:
             mount_credentials.unlink()

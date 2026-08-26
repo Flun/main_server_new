@@ -1,0 +1,5 @@
+# Fixed NAS source and targets used by nas_mount.py after a fresh Ubuntu install.
+flux ALL=(root) NOPASSWD: /usr/bin/mount -t cifs //192.168.1.119/homes /mnt/nas -o *
+flux ALL=(root) NOPASSWD: /usr/bin/mount --bind /mnt/nas/Flux/Photos/ComfyUI /opt/ComfyUI/output
+flux ALL=(root) NOPASSWD: /usr/bin/umount /opt/ComfyUI/output
+flux ALL=(root) NOPASSWD: /usr/bin/umount /mnt/nas

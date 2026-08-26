@@ -10,4 +10,6 @@ echo Installing dependencies...
 .venv\Scripts\python.exe -m pip install --upgrade pip || exit /b 1
 .venv\Scripts\python.exe -m pip install -r requirements.txt || (
   echo [Warning] Some packages failed to install. Media AI may need a compatible Python. & exit /b 1)
+echo Building Windows administrator helper...
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File fan_helper\build.ps1 || exit /b 1
 echo Done. Run: start_manager.bat

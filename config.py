@@ -1,6 +1,8 @@
 import json
 import os
 
+from comfy_model_paths import default_model_root
+
 IS_WINDOWS = os.name == "nt"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -33,11 +35,12 @@ DEFAULTS_LINUX = {
     "server_root": "/home/flux",
     "comfyui_dir": "/opt/ComfyUI",
     "comfyui_python": "/opt/ComfyUI/venv/bin/python",
+    "comfyui_model_root": default_model_root(),
     "comfyui_port": "8188",
     "llama_install_root": "/opt",
     "llama_version_glob": "/opt/llama-*",
     "llama_port": "8080",
-    "model_root": "/mnt/model",
+    "model_root": "/mnt/main-server-models/model",
     "vllm_env": "/home/flux/vllm-env",
     "vllm_dflash_env": "/home/flux/vllm-dflash-env",
     "vllm_port": "8000",
@@ -50,6 +53,7 @@ DEFAULTS_WINDOWS = {
     # 이 머신의 실제 ComfyUI_windows_portable 레이아웃에 맞춘 기본값.
     "comfyui_dir": r"C:\ComfyUI_windows_portable\ComfyUI",
     "comfyui_python": r"C:\ComfyUI_windows_portable\python_embeded\python.exe",
+    "comfyui_model_root": default_model_root(),
     "comfyui_port": "8188",
     # llama.cpp는 C:\ 루트의 전용 폴더(C:\llama)에 설치합니다.
     # .unsloth 빌드와 공유하지 않으며, git 레포의 CUDA 빌드를
@@ -81,6 +85,7 @@ ENV_MAP = {
     "server_root": "SERVER_ROOT",
     "comfyui_dir": "COMFY_DIR",
     "comfyui_python": "COMFY_PYTHON",
+    "comfyui_model_root": "COMFY_MODEL_ROOT",
     "comfyui_port": "COMFY_PORT",
     "llama_install_root": "LLAMA_INSTALL_ROOT",
     "llama_version_glob": "LLAMA_VERSION_GLOB",

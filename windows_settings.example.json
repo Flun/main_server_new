@@ -1,6 +1,7 @@
 {
   "comfyui_dir": "C:\\ComfyUI_windows_portable\\ComfyUI",
   "comfyui_python": "C:\\ComfyUI_windows_portable\\python_embeded\\python.exe",
+  "comfyui_model_root": "C:\\ComfyUI_windows_portable\\ComfyUI\\models",
   "comfyui_port": "8188",
   "llama_install_root": "C:\\llama",
   "llama_version_glob": "C:\\llama\\llama-*",

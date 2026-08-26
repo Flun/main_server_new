@@ -10,6 +10,7 @@ import atexit
 import json
 import os
 import queue
+import subprocess
 import threading
 import time
 import socket
@@ -28,6 +29,7 @@ HELPER_EXE = BASE_DIR / "fan_helper" / "dist" / "MainServer.FanHelper.exe"
 HELPER_HOST = "127.0.0.1"
 HELPER_PORT = 8997
 HELPER_TOKEN_FILE = HELPER_EXE.parent / "fan_helper_secret.txt"
+LINUX_HELPER = Path("/usr/local/sbin/main-server-fan-control")
 
 DEFAULT_CURVE = [
     {"temp": 40, "percent": 40},
@@ -265,9 +267,56 @@ class HelperClient:
                     pass
 
 
+class LinuxHwmonHelper:
+    """Restricted sudo bridge for Linux hwmon PWM channels.
+
+    The privileged helper owns validation, original-state restoration and the
+    lease watchdog.  The web process only passes a stable chip/channel id and a
+    bounded percentage; it never writes arbitrary sysfs paths.
+    """
+
+    _pipe = None
+
+    def request(self, command: dict[str, Any], timeout: float = 8.0) -> dict[str, Any]:
+        if not LINUX_HELPER.is_file():
+            raise RuntimeError(f"Linux 팬 helper가 설치되지 않았습니다: {LINUX_HELPER}")
+        action = str(command.get("command") or "status")
+        args = ["sudo", "-n", str(LINUX_HELPER)]
+        if action == "status":
+            args.append("status")
+        elif action == "set":
+            channel_id = str(command.get("id") or "")
+            percent = int(command.get("percent", 0))
+            args.extend(["set", channel_id, str(percent)])
+        elif action == "reset":
+            args.append("reset")
+            channel_id = str(command.get("id") or "")
+            if channel_id:
+                args.append(channel_id)
+        else:
+            raise RuntimeError(f"Linux 팬 helper가 지원하지 않는 명령입니다: {action}")
+        result = subprocess.run(args, capture_output=True, text=True, timeout=timeout)
+        raw = (result.stdout or "").strip()
+        try:
+            response = json.loads(raw) if raw else {}
+        except ValueError as error:
+            raise RuntimeError((result.stderr or raw or "Linux 팬 helper 응답 해석 실패").strip()) from error
+        if result.returncode or not response.get("ok"):
+            raise RuntimeError(str(response.get("error") or result.stderr.strip() or "Linux 팬 helper 작업 실패"))
+        return response
+
+    def stop(self) -> None:
+        if not LINUX_HELPER.is_file():
+            return
+        try:
+            self.request({"command": "reset"}, timeout=3.0)
+        except Exception:
+            pass
+
+
 class FanController:
     def __init__(self) -> None:
-        self.helper = HelperClient()
+        self.helper = HelperClient() if IS_WINDOWS else LinuxHwmonHelper()
         self._lock = threading.RLock()
         self._profile_state: dict[str, dict[str, Any]] = {
             "gpu": {"last_percent": None, "last_temp": None, "down_since": None, "channel_id": ""},
@@ -302,8 +351,6 @@ class FanController:
         return float(curve[-1]["percent"])
 
     def tick(self, gpus: list[dict[str, Any]]) -> None:
-        if not IS_WINDOWS:
-            return
         with self._lock:
             if self._manual_mode:
                 try:
@@ -465,10 +512,11 @@ class FanController:
         config = load_settings()
         with self._lock:
             runtime = dict(self._runtime)
+        helper_built = HELPER_EXE.is_file() if IS_WINDOWS else LINUX_HELPER.is_file()
         result: dict[str, Any] = {
             "platform": "windows" if IS_WINDOWS else "linux",
-            "available": IS_WINDOWS and HELPER_EXE.is_file(),
-            "helper_built": HELPER_EXE.is_file(),
+            "available": helper_built,
+            "helper_built": helper_built,
             "conflict": _fan_control_running(),
             "settings": config,
             "runtime": runtime,
@@ -476,7 +524,21 @@ class FanController:
             "pawnio_installer": pawnio_bootstrap.get_status(),
         }
         if not IS_WINDOWS:
-            result["message"] = "Linux 백엔드는 아직 구현되지 않았습니다"
+            if not LINUX_HELPER.is_file():
+                result["message"] = "Linux hwmon 팬 helper가 설치되지 않았습니다"
+            elif include_channels:
+                try:
+                    helper = self._helper_status(max_age_seconds=1.0)
+                    result["channels"] = helper.get("channels", [])
+                    result["cpu_temperature"] = helper.get("cpu_temperature")
+                    result["cpu_temperature_name"] = helper.get("cpu_temperature_name")
+                    result["lease_seconds"] = helper.get("lease_seconds", 15)
+                    result["available"] = bool(result["channels"])
+                    if not result["channels"]:
+                        result["message"] = "제어 가능한 Linux hwmon PWM 채널을 찾지 못했습니다"
+                except Exception as error:
+                    result["available"] = False
+                    result["message"] = str(error)
         elif result["conflict"]:
             result["message"] = "Fan Control을 종료하면 메인보드 팬 채널을 탐색할 수 있습니다"
         elif not HELPER_EXE.is_file():
@@ -608,6 +670,9 @@ class FanController:
         return response
 
     def close(self) -> None:
+        if not IS_WINDOWS:
+            self.helper.stop()
+            return
         try:
             if self._process_alive():
                 self.helper.request({"command": "reset"}, timeout=2)
@@ -616,7 +681,7 @@ class FanController:
         self.helper.stop()
 
     def _process_alive(self) -> bool:
-        return self.helper._pipe is not None
+        return IS_WINDOWS and self.helper._pipe is not None
 
 
 controller = FanController()

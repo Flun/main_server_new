@@ -2,7 +2,6 @@
 set -euo pipefail
 
 CONFIG_DIR=/etc/main-server/gpu-tune.d
-NVIDIA_SETTINGS=/usr/local/bin/nvidia-settings-610
 
 die() { echo "$*" >&2; exit 2; }
 is_uint() { [[ "$1" =~ ^[0-9]+$ ]]; }
@@ -49,32 +48,6 @@ validate() {
   (( FAN_PERCENT == 0 || (FAN_PERCENT >= 30 && FAN_PERCENT <= 100) )) || die "팬 속도는 자동(0) 또는 30~100%여야 합니다"
 }
 
-find_control_display() {
-  local sock display
-  export XAUTHORITY=/run/user/1000/gdm/Xauthority
-  for sock in /tmp/.X11-unix/X*; do
-    [[ -S "$sock" ]] || continue
-    display=":${sock##*X}"
-    if DISPLAY="$display" "$NVIDIA_SETTINGS" -q "[gpu:$GPU_UUID]/GPUFanControlState" >/dev/null 2>&1; then
-      printf '%s' "$display"
-      return 0
-    fi
-  done
-  return 1
-}
-
-apply_fan() {
-  local display
-  display=$(find_control_display) || return 1
-  if (( FAN_AUTO )); then
-    DISPLAY="$display" "$NVIDIA_SETTINGS" -a "[gpu:$GPU_UUID]/GPUFanControlState=0" >/dev/null
-    echo "GPU $GPU_INDEX 팬 자동 제어 적용 (DISPLAY=$display)"
-  else
-    DISPLAY="$display" "$NVIDIA_SETTINGS" -a "[gpu:$GPU_UUID]/GPUFanControlState=1" -a "[GPU:$GPU_UUID.FAN]/GPUTargetFanSpeed=$FAN_PERCENT" >/dev/null
-    echo "GPU $GPU_INDEX의 연결된 모든 팬에 $FAN_PERCENT% 적용 (DISPLAY=$display)"
-  fi
-}
-
 write_config() {
   install -d -o root -g root -m 0755 "$CONFIG_DIR"
   umask 022
@@ -92,8 +65,7 @@ apply_one() {
   fi
   nvidia-smi -i "$GPU_UUID" -pl "$POWER_LIMIT" >/dev/null
   if (( CLOCK_AUTO )); then nvidia-smi -i "$GPU_UUID" -rgc >/dev/null; else nvidia-smi -i "$GPU_UUID" -lgc "0,$CLOCK_MAX" >/dev/null; fi
-  apply_fan || echo "GPU $GPU_INDEX 팬 제어는 현재 X 세션에 노출되지 않아 건너뜁니다" >&2
-  echo "GPU $GPU_INDEX ($GPU_UUID): ${POWER_LIMIT}W / $([[ $CLOCK_AUTO == 1 ]] && echo auto || echo ${CLOCK_MAX}MHz) / fan $([[ $FAN_AUTO == 1 ]] && echo auto || echo ${FAN_PERCENT}%)"
+  echo "GPU $GPU_INDEX ($GPU_UUID): ${POWER_LIMIT}W / $([[ $CLOCK_AUTO == 1 ]] && echo auto || echo ${CLOCK_MAX}MHz)"
 }
 
 apply_saved() {
@@ -114,7 +86,8 @@ case "${1:-apply}" in
   set)
     [[ $# -eq 5 ]] || die "사용법: $0 set GPU POWER_W CLOCK_MHZ FAN_PERCENT(0=auto)"
     load_config "$2"; TUNING_ENABLED=1; POWER_LIMIT=$3; CLOCK_MAX=$4; CLOCK_AUTO=0; FAN_PERCENT=$5
-    if (( FAN_PERCENT == 0 )); then FAN_AUTO=1; else FAN_AUTO=0; fi
+    (( FAN_PERCENT == 0 )) || die "Linux에서는 GPU 자체 팬을 제어하지 않습니다. 메인보드 PWM 팬 제어를 사용하세요"
+    FAN_AUTO=1
     validate; write_config; apply_one "$GPU_UUID"
     ;;
   reset)
